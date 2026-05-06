@@ -11,14 +11,12 @@ export class BrevoService {
 
     const apiKey = this.configService.get<string>('BREVO_API_KEY')
 
-    if (!apiKey) {
-      throw new Error('BREVO_API_KEY is not defined')
+    if (apiKey) {
+      this.apiInstance.setApiKey(
+        Brevo.TransactionalEmailsApiApiKeys.apiKey,
+        apiKey
+      )
     }
-
-    this.apiInstance.setApiKey(
-      Brevo.TransactionalEmailsApiApiKeys.apiKey,
-      apiKey
-    )
   }
 
   async sendOtpEmail(toEmail: string, name: string, otp: string) {

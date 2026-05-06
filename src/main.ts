@@ -14,7 +14,7 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000
 
-  const server = await app.listen(port)
+  const server = await app.listen(port, '0.0.0.0')
   server.setTimeout(300000)
   server.keepAliveTimeout = 300000
 

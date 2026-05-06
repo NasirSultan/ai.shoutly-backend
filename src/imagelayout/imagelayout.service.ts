@@ -33,11 +33,13 @@ export class ImagelayoutService {
 
   constructor() {
     this.prisma = new PrismaClient();
-    this.imagekit = new ImageKit({
-      publicKey: process.env.IMAGEKIT_PUBLIC_KEY || '',
-      privateKey: process.env.IMAGEKIT_PRIVATE_KEY || '',
-      urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT || '',
-    });
+    if (process.env.IMAGEKIT_PUBLIC_KEY && process.env.IMAGEKIT_PRIVATE_KEY && process.env.IMAGEKIT_URL_ENDPOINT) {
+      this.imagekit = new ImageKit({
+        publicKey: process.env.IMAGEKIT_PUBLIC_KEY,
+        privateKey: process.env.IMAGEKIT_PRIVATE_KEY,
+        urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT,
+      });
+    }
   }
 
   async createLayout(dto: LayoutDto): Promise<{ originalUrl: string; imageWithTextUrl: string }> {

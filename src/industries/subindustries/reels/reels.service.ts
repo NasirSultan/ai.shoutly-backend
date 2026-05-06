@@ -9,31 +9,29 @@ const prisma = new PrismaClient()
 
 @Injectable()
 export class ReelsService {
-  private s3: S3Client
+  private s3!: S3Client
   private bucketName: string
   private region: string
   private logger = new Logger('ReelsService')
 
   constructor() {
+    this.bucketName = process.env.AWS_BUCKET_NAME || ''
+    this.region = process.env.AWS_REGION || 'us-east-1'
+
     if (
-      !process.env.AWS_BUCKET_NAME ||
-      !process.env.AWS_REGION ||
-      !process.env.AWS_ACCESS_KEY_ID ||
-      !process.env.AWS_SECRET_ACCESS_KEY
+      process.env.AWS_BUCKET_NAME &&
+      process.env.AWS_REGION &&
+      process.env.AWS_ACCESS_KEY_ID &&
+      process.env.AWS_SECRET_ACCESS_KEY
     ) {
-      throw new Error('AWS environment variables are missing')
+      this.s3 = new S3Client({
+        region: this.region,
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID as string,
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY as string
+        }
+      })
     }
-
-    this.bucketName = process.env.AWS_BUCKET_NAME
-    this.region = process.env.AWS_REGION
-
-    this.s3 = new S3Client({
-      region: this.region,
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID as string,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY as string
-      }
-    })
   }
 
   async uploadMultipleReels(subIndustryId: string, files: Express.Multer.File[]) {
