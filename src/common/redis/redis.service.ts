@@ -8,10 +8,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private ioRedisClients: Redis[] = []
 
   async onModuleInit() {
+    console.log('REDIS_URL:', process.env.REDIS_URL)
+    console.log('DATABASE_URL:', process.env.DATABASE_URL)
+
     this.client = createClient({ url: process.env.REDIS_URL })
     await this.client.connect()
   }
 
+  
   async onModuleDestroy() {
     await this.client.quit()
     await Promise.all(this.ioRedisClients.map((c) => c.quit()))

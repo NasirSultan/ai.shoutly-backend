@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
-
+import dotenv from 'dotenv'
+dotenv.config()
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule)
@@ -14,7 +15,7 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3000
 
-  const server = await app.listen(port, '0.0.0.0')
+  const server = await app.listen(port)
   server.setTimeout(300000)
   server.keepAliveTimeout = 300000
 

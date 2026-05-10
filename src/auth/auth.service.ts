@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt'
 import { JwtLibService } from 'src/lib/jwt/jwt.service'
 import { RedisService } from '../common/redis/redis.service'
 import { BrevoService } from 'src/brevo/brevo.service'
+
 @Injectable()
 export class AuthService {
   constructor(private prisma: PrismaService,

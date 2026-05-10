@@ -11,7 +11,7 @@ channel = "stable-25_05"
 [userenv.shared]
 PORT = "3000"
 JWT_SECRET = "dev-jwt-secret-change-in-production"
-REDIS_URL = "redis://localhost:6379"
+REDIS_URL = "redis://default:gQAAAAAAAdg0AAIgcDI3ZjhlMDE3MWY2OTE0ZTY3Yjg3ZTBiYWFlMzJmMjRhMg@suitable-basilisk-120884.upstash.io:6379"
 
 [workflows]
 runButton = "Project"
@@ -37,15 +37,19 @@ task = "shell.exec"
 args = "bash start.sh"
 waitForPort = 3000
 
-[[ports]]
-localPort = 6379
-externalPort = 80
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "start.sh"]
+build = ["npm", "run", "build"]
 
 [[ports]]
 localPort = 3000
 externalPort = 3000
 
-[deployment]
-deploymentTarget = "vm"
-run = ["bash", "start.sh"]
-build = ["npm", "run", "build"]
+[[ports]]
+localPort = 5555
+externalPort = 3001
+
+[[ports]]
+localPort = 6379
+externalPort = 80
