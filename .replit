@@ -11,7 +11,7 @@ channel = "stable-25_05"
 [userenv.shared]
 PORT = "3000"
 JWT_SECRET = "dev-jwt-secret-change-in-production"
-REDIS_URL = "redis://default:gQAAAAAAAdg0AAIgcDI3ZjhlMDE3MWY2OTE0ZTY3Yjg3ZTBiYWFlMzJmMjRhMg@suitable-basilisk-120884.upstash.io:6379"
+REDIS_URL = "rediss://default:gQAAAAAAAdg0AAIgcDI3ZjhlMDE3MWY2OTE0ZTY3Yjg3ZTBiYWFlMzJmMjRhMg@suitable-basilisk-120884.upstash.io:6379"
 
 [workflows]
 runButton = "Project"
