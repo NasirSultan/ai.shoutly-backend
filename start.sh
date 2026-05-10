@@ -1,4 +1,3 @@
 #!/bin/bash
-redis-server --daemonize yes --logfile /tmp/redis.log 2>/dev/null || true
-sleep 1
+npm run build
 exec node dist/main.js
