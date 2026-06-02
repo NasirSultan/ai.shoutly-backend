@@ -13,8 +13,9 @@ import { UserModule } from './users/user.module';
 import { GeminiImageModule } from "./geminiimage/geminiimage.module";
 import { FacebookModule } from './social-media/facebook/facebook.module';
 import { JobsModule } from './jobs/jobs.module'
+import { AutopostModule } from './autopost/autopost.module';
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule, 
+  imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
     UserModule, BrevoModule,
       JwtModule.register({
       secret: process.env.JWT_SECRET, // must be defined in .env
@@ -23,7 +24,8 @@ import { JobsModule } from './jobs/jobs.module'
   SubscriptionModule,
   CalendarModule,
   GeminiImageModule,
-  JobsModule
+  JobsModule,
+  AutopostModule,
 
 ],
   controllers: [AppController],

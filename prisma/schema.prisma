@@ -35,6 +35,8 @@ model User {
   role UserRole @default(USER)
   subscriptions Subscription[]
    connectedSocials SocialPlatform[] @default([])
+  socialAccounts   SocialAccount[]
+  posts            Post[]
   jobTitle String?
 
   industryId String? @unique
@@ -281,6 +283,68 @@ enum PostStatus {
 
 
 
+
+enum PostStatusBridge {
+  PROCESSING
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+enum DeliveryStatus {
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+model SocialAccount {
+  id                String         @id @default(uuid())
+  userId            String
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outstandAccountId String         @unique
+  platform          SocialPlatform?
+  username          String?
+  avatarUrl         String?
+  status            String         @default("active")
+  deliveries        PostDelivery[]
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([platform])
+}
+
+model Post {
+  id             String            @id @default(uuid())
+  userId         String
+  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content        String
+  status         PostStatusBridge  @default(PROCESSING)
+  scheduledAt    DateTime?
+  outstandPostId String?
+  deliveries     PostDelivery[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([userId])
+  @@index([outstandPostId])
+}
+
+model PostDelivery {
+  id              String         @id @default(uuid())
+  postId          String
+  post            Post           @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccountId String
+  socialAccount   SocialAccount  @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  deliveryStatus  DeliveryStatus @default(SCHEDULED)
+  outstandPostId  String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([postId])
+  @@index([socialAccountId])
+  @@index([outstandPostId])
+}
 
 model FacebookAccount {
   id          String   @id @default(uuid())
