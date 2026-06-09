@@ -13,6 +13,8 @@ import { UserModule } from './users/user.module';
 import { GeminiImageModule } from "./geminiimage/geminiimage.module";
 import { FacebookModule } from './social-media/facebook/facebook.module';
 import { JobsModule } from './jobs/jobs.module'
+import {AutopostModule} from './outstand/autopost.module'
+
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule, 
     UserModule, BrevoModule,
@@ -23,8 +25,8 @@ import { JobsModule } from './jobs/jobs.module'
   SubscriptionModule,
   CalendarModule,
   GeminiImageModule,
-  JobsModule
-
+  JobsModule,
+  AutopostModule
 ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,0 +1,35 @@
+I noticed that this has happened : 
+
+{
+    "success": true,
+    "count": 3,
+    "data": [
+        {
+            "id": "5f9eeb7c-3c00-439d-8287-16d61d2d40e2",
+            "outstandAccountId": "QRQay",
+            "platform": "FACEBOOK",
+            "username": "Infyze AI Solutions",
+            "status": "active",
+            "createdAt": "2026-06-08T08:16:50.970Z"
+        },
+        {
+            "id": "22613d25-7efe-4a03-8fd6-ca7789ce06f2",
+            "outstandAccountId": "X2GJe",
+            "platform": "INSTAGRAM",
+            "username": "luxespace_digital",
+            "status": "active",
+            "createdAt": "2026-05-31T22:17:04.796Z"
+        },
+        {
+            "id": "1c5ae21a-15c1-41a2-aa22-43674ead7cd9",
+            "outstandAccountId": "uOkYE",
+            "platform": "FACEBOOK",
+            "username": "Infyze AI Solutions",
+            "status": "active",
+            "createdAt": "2026-05-31T19:51:13.587Z"
+        }
+    ]
+}
+
+
+There are 2 facebook same accounts belongs to 1 user so it's getting stuck, posting is being done to instagram but not facebook so how to overcome this so this never happen again?

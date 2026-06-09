@@ -450,7 +450,7 @@ export class PostGeneratorService {
       if (item.type === 'DB') {
         await this.delay(DB_DELAY_MS)
       }
-
+      
       const { text, hashtags } = textResults[globalIndex]
 
       const savedHashtags = await Promise.all(

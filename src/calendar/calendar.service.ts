@@ -33,6 +33,14 @@ export class CalendarService {
     subIndustryIds: string[],
     postTimeInput: string
   ) {
+   await prisma.subscription.updateMany({
+     where: { userId: userId },
+     data: {
+       isActive: true,
+       isTrial: false
+     }
+   })
+   
     const subscription = await prisma.subscription.findFirst({
       where: { userId, isActive: true },
     })
@@ -196,7 +204,7 @@ async getPlanByUser(userId: string) {
  async updatePost(
     userId: string,
     postId: string,
-    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string },
+    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string,timezone?: string },
     fileData?: { imageUrl: string; deleteUrl: string }
   ) {
     const post = await prisma.calendarPost.findUnique({ where: { id: postId } })
@@ -207,10 +215,12 @@ async getPlanByUser(userId: string) {
 
     let updatedData: any = {}
 
-    if (body.postTime) {
-      const userTz = await this.getUserTimezone(userId)
-      updatedData.postTime = this.toUTC(body.postTime, userTz)
-    }
+   if (body.postTime) {
+     updatedData.postTime = DateTime
+       .fromISO(body.postTime, { zone: body.timezone })
+       .toUTC()
+       .toISO()
+   }
     if (body.status) updatedData.status = body.status
     if (body.reelId !== undefined) updatedData.reelId = body.reelId
 

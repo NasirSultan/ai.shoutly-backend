@@ -25,6 +25,8 @@ model User {
   brandName String?
   brandLogo String?
   website String?
+  socialAccounts SocialAccount[]
+  posts Post[]
 
   facebookAccount FacebookAccount?
 
@@ -308,4 +310,87 @@ model FacebookPage {
   updatedAt   DateTime @updatedAt
 
   @@unique([facebookAccountId, pageId]) // prevent duplicate pages per account
+}
+
+
+// New 3 Models for AutoPosting & OutStand API
+
+// ✅ Enums for clean status handling
+enum PostStatusBridge {
+  PROCESSING
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+enum DeliveryStatus {
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+// ✅ 1. SocialAccount (Outstand mapping)
+model SocialAccount {
+  id String @id @default(uuid())
+
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  platform Platform
+  outstandAccountId String @unique
+  deliveries PostDelivery[]
+
+  username String?
+  avatarUrl String?
+  status String
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+
+// ✅ 2. Post (Publishing layer)
+model Post {
+  id String @id @default(uuid())
+
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  content String
+  status PostStatusBridge
+
+  scheduledAt DateTime?
+  outstandPostId String?
+
+  deliveries PostDelivery[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([outstandPostId])
+}
+
+
+// ✅ 3. PostDelivery (Per-platform tracking)
+model PostDelivery {
+  id String @id @default(uuid())
+
+  postId String
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  socialAccountId String
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  deliveryStatus DeliveryStatus
+  outstandPostId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([postId])
+  @@index([socialAccountId])
+  @@index([outstandPostId])
 }

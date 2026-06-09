@@ -25,7 +25,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   createIORedisClient() {
     const client = new Redis(process.env.REDIS_URL!, {
       maxRetriesPerRequest: null,
+      tls: {}, // ← Required for Upstash (rediss:// endpoint)
+      enableAutoPipelining: true, // ← Recommended for Upstash latency
     })
+
+    client.on('connect', () => console.log('✅ IORedis connected to Upstash'))
+    client.on('error', (err) => console.error('❌ IORedis connection error:', err))
+
     this.ioRedisClients.push(client)
     return client
   }

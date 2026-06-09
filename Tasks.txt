@@ -1,0 +1,10 @@
+Tasks of 5/30/2026
+- Add Instagram integeration
+- Complete Instagram Account Connection Automation
+- Test and fix Posting to facebook
+- Test and fix Posting to instagram
+- Test and fix scheduling to facebook
+- Test and fix scheduling to instagram
+
+
+- Webhook connection

@@ -21,6 +21,12 @@ export class PostQueue implements OnModuleInit {
   }
 
   async addPublishJob(calendarPostId: string) {
-    return this.queue.add('publish', { calendarPostId }, { jobId: `publish-${calendarPostId}` })
+    return this.queue.add('publish', { calendarPostId }) // ✅ No jobId
+  }
+
+  // ✅ Add this method
+  async obliterateQueue() {
+    await this.queue.obliterate({ force: true })
+    console.log('[Queue] All stuck jobs wiped from Redis')
   }
 }

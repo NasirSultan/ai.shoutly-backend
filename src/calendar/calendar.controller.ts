@@ -52,7 +52,7 @@ async getUserPlan(@Req() req) {
 async updateCalendarPost(
   @Req() req,
   @Param('postId') postId: string,
-  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string },
+  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string, timezone?: string },
   @UploadedFile() file?: Express.Multer.File
 ) {
   const userId = req.user.id
