@@ -16,7 +16,7 @@ import { JobsModule } from './jobs/jobs.module'
 import {AutopostModule} from './outstand/autopost.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule, 
+  imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
     UserModule, BrevoModule,
       JwtModule.register({
       secret: process.env.JWT_SECRET, // must be defined in .env
