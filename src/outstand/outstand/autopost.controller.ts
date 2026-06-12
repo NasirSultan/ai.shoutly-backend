@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Req, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Req, UseGuards, Get, Query } from '@nestjs/common';
 import { AutopostService } from './autopost.service';
 import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
@@ -22,6 +22,19 @@ export class AutopostController {
   getMyAccounts(@Req() req) {
     return this.autopostService.getUserAccounts(req.user.id);
   }
+
+  @Get('analytics')
+    @UseGuards(AuthGuard)
+    async getDashboardAnalytics(
+      @Req() req,
+      @Query('from') from?: string,
+      @Query('to') to?: string,
+    ) {
+      const userId = req.user.id;
+      // Pass the query strings from the frontend directly into your service method
+      return this.autopostService.calculateUserDashboardMetrics(userId, from, to);
+    }
+  
 
   @Post('fix-accounts')
   async fixAccountPlatforms() {
