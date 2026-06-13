@@ -1,9 +1,8 @@
-import { Injectable, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { PrismaClient, SocialPlatform, PostStatusBridge, DeliveryStatus } from '@prisma/client';
 import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
 import { SchedulePostDto } from './dto/schedule-post.dto';
-import { Platform } from '@prisma/client';
 import axios from 'axios';
 
 @Injectable()
@@ -111,7 +110,7 @@ export class AutopostService {
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
-        platform: { in: dto.platforms as Platform[] },
+        platform: { in: dto.platforms.map(p => p.toUpperCase()) as SocialPlatform[] },
       },
     });
 
@@ -200,7 +199,7 @@ export class AutopostService {
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
-        platform: { in: dto.platforms as Platform[] },
+        platform: { in: dto.platforms.map(p => p.toUpperCase()) as SocialPlatform[] },
       },
     });
     
