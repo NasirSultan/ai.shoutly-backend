@@ -1,7 +1,7 @@
 datasource db {
   provider  = "postgresql"
-  url       = env("SUPABASE_DATABASE_URL")
-  directUrl = env("SUPABASE_DIRECT_URL")
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -10,56 +10,47 @@ generator client {
 
 
 model User {
-  id String @id @default(uuid())
-  name String
-  email String @unique
-  password       String?
-  phone             String?  
-  logo Logo?
-  file String?
-  deleteFileUrl String?
-  otp String?
-  otpExpiresAt DateTime?
-  refreshToken String?
-  calendarPosts CalendarPost[]
-  brandName String?
-  brandLogo String?
-  website String?
-  socialAccounts SocialAccount[]
-  posts Post[]
-
-  facebookAccount FacebookAccount?
-
-  emailNotification Boolean @default(true)
-  pushNotification Boolean @default(false)
-  weeklyNotification Boolean @default(true)
-  linkedAccounts LinkedAccount[]
-  role UserRole @default(USER)
-  subscriptions Subscription[]
-   connectedSocials SocialPlatform[] @default([])
+  id               String           @id @default(uuid())
+  name             String
+  email            String           @unique
+  password         String?
+  phone            String?
+  logo             Logo?
+  file             String?
+  deleteFileUrl    String?
+  otp              String?
+  otpExpiresAt     DateTime?
+  refreshToken     String?
+  calendarPosts    CalendarPost[]
+  brandName        String?
+  brandLogo        String?
+  website          String?
   socialAccounts   SocialAccount[]
   posts            Post[]
-  jobTitle String?
+  facebookAccount  FacebookAccount?
+  emailNotification  Boolean        @default(true)
+  pushNotification   Boolean        @default(false)
+  weeklyNotification Boolean        @default(true)
+  linkedAccounts   LinkedAccount[]
+  role             UserRole         @default(USER)
+  subscriptions    Subscription[]
+  connectedSocials SocialPlatform[] @default([])
+  jobTitle         String?
+  industryId       String?          @unique
+  industry         Industry?        @relation(fields: [industryId], references: [id])
+  subIndustryId    String?          @unique
+  subIndustry      SubIndustry?     @relation(fields: [subIndustryId], references: [id])
+  timezone         String?
+  language         String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
-  industryId String? @unique
-  industry Industry? @relation(fields: [industryId], references: [id])
-
-  subIndustryId String? @unique
-  subIndustry SubIndustry? @relation(fields: [subIndustryId], references: [id])
-
-  timezone String?
-  language String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
   @@index([email])
   @@index([otp])
   @@index([createdAt])
   @@index([industryId])
   @@index([subIndustryId])
-
 }
-
 
 
 enum SocialPlatform {
@@ -68,6 +59,7 @@ enum SocialPlatform {
   LINKEDIN
   INSTAGRAM
 }
+
 enum UserRole {
   USER
   SUPERADMIN
@@ -76,70 +68,12 @@ enum UserRole {
   FINANCEADMIN
 }
 
-
-
-
-
-model LinkedAccount {
-  id             String   @id @default(uuid())
-  userId         String
-  platform       Platform
-  platformUserId String
-  accessToken    String
-  refreshToken   String?
-  scopes         String
-  tokenExpiry    DateTime?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
- user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
 enum Platform {
   FACEBOOK
   INSTAGRAM
   LINKEDIN
   X
 }
-
-
-model Industry {
-  id          String        @id @default(uuid())
-  name        String
-  subIndustries SubIndustry[]
-  user    User?
-  @@index([name])
-}
-
-model SubIndustry {
-  id          String        @id @default(uuid())
-  name        String
-  industry    Industry      @relation(fields: [industryId], references: [id], onDelete: Cascade)
-  industryId  String
-  images      Image[]
-   reels       Reel[] 
-  contents   Content[]
-    user      User? 
-    calendarPosts CalendarPost[]
-  @@index([industryId])
-  @@index([name])
-}
-
-model Image {
-  id          String        @id @default(uuid())
-  file        String
-  text          Boolean       @default(false)
-  deleteUrl String  @default("") 
-  subIndustry SubIndustry   @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
-  subIndustryId String
-    calendarPosts CalendarPost[]
-  createdAt   DateTime      @default(now())
-
-  @@index([subIndustryId])
-}
-
-
-
 
 enum LogoSize {
   SMALL
@@ -150,66 +84,6 @@ enum LogoSize {
 enum LogoPosition {
   TOP_LEFT
   TOP_RIGHT
-}
-model Logo {
-  id String @id @default(uuid())
-
-  file String
-  size LogoSize
-  position LogoPosition
-  color String?
-
-  phone String?
-  website String?
-
-  userId String @unique
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([userId])
-}
-
-
-model Content {
-  id            String            @id @default(uuid())
-  text          String
-  subIndustry   SubIndustry       @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
-  subIndustryId String
-  hashtags      ContentHashtag[]
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  calendarPosts CalendarPost[]
-  @@index([subIndustryId])
-  @@index([createdAt])
-}
-
-model Hashtag {
-  id       String           @id @default(uuid())
-  tag      String           @unique
-  contents ContentHashtag[]
-}
-
-model ContentHashtag {
-  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
-  contentId String
-  hashtag   Hashtag  @relation(fields: [hashtagId], references: [id], onDelete: Cascade)
-  hashtagId String
-
-  @@id([contentId, hashtagId])
-  @@index([hashtagId])
-}
-
-
-model Reel {
-  id            String       @id @default(uuid())
-  file          String
-  subIndustry   SubIndustry  @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
-  subIndustryId String
-  createdAt     DateTime     @default(now())
-  calendarPosts CalendarPost[]
-  @@index([subIndustryId])
 }
 
 enum Plan {
@@ -222,53 +96,6 @@ enum Billing {
   YEARLY
 }
 
-model Subscription {
-  id        String    @id @default(uuid())
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId    String
-  plan      Plan?     
-  billing   Billing?  
-  isTrial   Boolean   @default(false)
-  startedAt DateTime  @default(now())
-  expiresAt DateTime?
-  isActive  Boolean   @default(true)
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-
-  @@index([userId])
-}
-
-
-
-model CalendarPost {
-  id             String       @id @default(uuid())
-  userId         String
-  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  subIndustryId  String
-  subIndustry    SubIndustry  @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
-  
-  contentId      String?      
-  content        Content?     @relation(fields: [contentId], references: [id], onDelete: SetNull)
-  
-  reelId         String?      
-  reel           Reel?        @relation(fields: [reelId], references: [id], onDelete: SetNull)
-  
-  imageId        String?      
-  image          Image?       @relation(fields: [imageId], references: [id], onDelete: SetNull)
-  imageUrl       String?      @default("")
-  type           PostType
-  postTime       DateTime
-  status         PostStatus   @default(SCHEDULED)
-  
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-
-  @@index([userId])
-  @@index([subIndustryId])
-  @@index([postTime])
-}
-
 enum PostType {
   REEL
   IMAGE
@@ -276,15 +103,11 @@ enum PostType {
 
 enum PostStatus {
   SCHEDULED
-  POSTING 
+  POSTING
   SKIP
   POSTED
   FAILED
 }
-
-
-
-
 
 enum PostStatusBridge {
   PROCESSING
@@ -297,6 +120,179 @@ enum DeliveryStatus {
   SCHEDULED
   PUBLISHED
   FAILED
+}
+
+
+model LinkedAccount {
+  id             String    @id @default(uuid())
+  userId         String
+  platform       Platform
+  platformUserId String
+  accessToken    String
+  refreshToken   String?
+  scopes         String
+  tokenExpiry    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Industry {
+  id            String        @id @default(uuid())
+  name          String
+  subIndustries SubIndustry[]
+  user          User?
+
+  @@index([name])
+}
+
+model SubIndustry {
+  id            String        @id @default(uuid())
+  name          String
+  industry      Industry      @relation(fields: [industryId], references: [id], onDelete: Cascade)
+  industryId    String
+  images        Image[]
+  reels         Reel[]
+  contents      Content[]
+  user          User?
+  calendarPosts CalendarPost[]
+
+  @@index([industryId])
+  @@index([name])
+}
+
+model Image {
+  id            String      @id @default(uuid())
+  file          String
+  text          Boolean     @default(false)
+  deleteUrl     String      @default("")
+  subIndustry   SubIndustry @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
+  subIndustryId String
+  calendarPosts CalendarPost[]
+  createdAt     DateTime    @default(now())
+
+  @@index([subIndustryId])
+}
+
+model Logo {
+  id       String      @id @default(uuid())
+  file     String
+  size     LogoSize
+  position LogoPosition
+  color    String?
+  phone    String?
+  website  String?
+  userId   String      @unique
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@index([userId])
+}
+
+model Content {
+  id            String           @id @default(uuid())
+  text          String
+  subIndustry   SubIndustry      @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
+  subIndustryId String
+  hashtags      ContentHashtag[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  calendarPosts CalendarPost[]
+
+  @@index([subIndustryId])
+  @@index([createdAt])
+}
+
+model Hashtag {
+  id       String           @id @default(uuid())
+  tag      String           @unique
+  contents ContentHashtag[]
+}
+
+model ContentHashtag {
+  content   Content @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  contentId String
+  hashtag   Hashtag @relation(fields: [hashtagId], references: [id], onDelete: Cascade)
+  hashtagId String
+
+  @@id([contentId, hashtagId])
+  @@index([hashtagId])
+}
+
+model Reel {
+  id            String        @id @default(uuid())
+  file          String
+  subIndustry   SubIndustry   @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
+  subIndustryId String
+  createdAt     DateTime      @default(now())
+  calendarPosts CalendarPost[]
+
+  @@index([subIndustryId])
+}
+
+model Subscription {
+  id        String    @id @default(uuid())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  plan      Plan?
+  billing   Billing?
+  isTrial   Boolean   @default(false)
+  startedAt DateTime  @default(now())
+  expiresAt DateTime?
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+model CalendarPost {
+  id            String      @id @default(uuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subIndustryId String
+  subIndustry   SubIndustry @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
+  contentId     String?
+  content       Content?    @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  reelId        String?
+  reel          Reel?       @relation(fields: [reelId], references: [id], onDelete: SetNull)
+  imageId       String?
+  image         Image?      @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  imageUrl      String?     @default("")
+  type          PostType
+  postTime      DateTime
+  status        PostStatus  @default(SCHEDULED)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([userId])
+  @@index([subIndustryId])
+  @@index([postTime])
+}
+
+model FacebookAccount {
+  id          String        @id @default(uuid())
+  accessToken String
+  userId      String        @unique
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pages       FacebookPage[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model FacebookPage {
+  id                String          @id @default(uuid())
+  pageId            String
+  pageAccessToken   String
+  pageName          String?
+  isDefault         Boolean         @default(false)
+  facebookAccountId String
+  facebookAccount   FacebookAccount @relation(fields: [facebookAccountId], references: [id], onDelete: Cascade)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([facebookAccountId, pageId])
 }
 
 model SocialAccount {
@@ -317,16 +313,16 @@ model SocialAccount {
 }
 
 model Post {
-  id             String            @id @default(uuid())
+  id             String           @id @default(uuid())
   userId         String
-  user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   content        String
-  status         PostStatusBridge  @default(PROCESSING)
+  status         PostStatusBridge @default(PROCESSING)
   scheduledAt    DateTime?
   outstandPostId String?
   deliveries     PostDelivery[]
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
   @@index([userId])
   @@index([outstandPostId])
@@ -342,117 +338,6 @@ model PostDelivery {
   outstandPostId  String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
-
-  @@index([postId])
-  @@index([socialAccountId])
-  @@index([outstandPostId])
-}
-
-model FacebookAccount {
-  id          String   @id @default(uuid())
-  accessToken String   // user-level token from OAuth
-
-  userId      String   @unique
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  pages       FacebookPage[]
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
-model FacebookPage {
-  id              String   @id @default(uuid())
-  pageId          String
-  pageAccessToken String
-  pageName        String?  // optional but helpful
-  isDefault          Boolean  @default(false)
-  facebookAccountId String
-  facebookAccount   FacebookAccount @relation(fields: [facebookAccountId], references: [id], onDelete: Cascade)
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@unique([facebookAccountId, pageId]) // prevent duplicate pages per account
-}
-
-
-// New 3 Models for AutoPosting & OutStand API
-
-// ✅ Enums for clean status handling
-enum PostStatusBridge {
-  PROCESSING
-  SCHEDULED
-  PUBLISHED
-  FAILED
-}
-
-enum DeliveryStatus {
-  SCHEDULED
-  PUBLISHED
-  FAILED
-}
-
-// ✅ 1. SocialAccount (Outstand mapping)
-model SocialAccount {
-  id String @id @default(uuid())
-
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  platform Platform
-  outstandAccountId String @unique
-  deliveries PostDelivery[]
-
-  username String?
-  avatarUrl String?
-  status String
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([userId])
-}
-
-
-// ✅ 2. Post (Publishing layer)
-model Post {
-  id String @id @default(uuid())
-
-  userId String
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  content String
-  status PostStatusBridge
-
-  scheduledAt DateTime?
-  outstandPostId String?
-
-  deliveries PostDelivery[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([userId])
-  @@index([outstandPostId])
-}
-
-
-// ✅ 3. PostDelivery (Per-platform tracking)
-model PostDelivery {
-  id String @id @default(uuid())
-
-  postId String
-  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
-
-  socialAccountId String
-  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
-
-  deliveryStatus DeliveryStatus
-  outstandPostId String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 
   @@index([postId])
   @@index([socialAccountId])
