@@ -343,3 +343,16 @@ model PostDelivery {
   @@index([socialAccountId])
   @@index([outstandPostId])
 }
+
+model RagDocument {
+  id        String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title     String
+  content   String
+  metadata  Json                         @default("{}")
+  embedding Unsupported("vector(768)")?
+  createdAt DateTime                     @default(now()) @map("created_at")
+  updatedAt DateTime                     @updatedAt     @map("updated_at")
+
+  @@map("rag_documents")
+  @@index([createdAt])
+}

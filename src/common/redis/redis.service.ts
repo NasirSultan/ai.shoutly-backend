@@ -8,10 +8,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private ioRedisClients: Redis[] = []
 
   async onModuleInit() {
-    this.client = createClient({
-      url: process.env.REDIS_URL,
-      socket: { tls: true, rejectUnauthorized: false },
-    })
+    this.client = createClient({ url: process.env.REDIS_URL })
     await this.client.connect()
   }
 
@@ -28,8 +25,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   createIORedisClient() {
     const client = new Redis(process.env.REDIS_URL!, {
       maxRetriesPerRequest: null,
-      tls: {}, // ← Required for Upstash (rediss:// endpoint)
-      enableAutoPipelining: true, // ← Recommended for Upstash latency
+      enableAutoPipelining: true,
     })
 
     client.on('connect', () => console.log('✅ IORedis connected to Upstash'))

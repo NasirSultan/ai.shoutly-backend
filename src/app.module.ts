@@ -14,6 +14,7 @@ import { GeminiImageModule } from "./geminiimage/geminiimage.module";
 import { FacebookModule } from './social-media/facebook/facebook.module';
 import { JobsModule } from './jobs/jobs.module'
 import {AutopostModule} from './outstand/autopost.module'
+import { RagModule } from './rag/rag.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -26,7 +27,8 @@ import {AutopostModule} from './outstand/autopost.module'
   CalendarModule,
   GeminiImageModule,
   JobsModule,
-  AutopostModule
+  AutopostModule,
+  RagModule,
 ],
   controllers: [AppController],
   providers: [AppService],
