@@ -5,10 +5,12 @@ import {
   Delete,
   Body,
   Param,
+  Res,
   HttpCode,
   HttpStatus,
   ValidationPipe,
 } from '@nestjs/common'
+import { Response } from 'express'
 import { RagService } from './rag.service'
 import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
@@ -76,5 +78,27 @@ export class RagController {
   @HttpCode(HttpStatus.OK)
   search(@Body(ValidationPipe) dto: ChatQueryDto) {
     return this.ragService.searchSimilar(dto.query, dto.topK)
+  }
+
+  /**
+   * POST /rag/chat/stream
+   * Streaming chat with typing effect via Server-Sent Events.
+   * Returns: sources first, then answer chunks, then done signal.
+   */
+  @Post('chat/stream')
+  async streamChat(
+    @Body(ValidationPipe) dto: ChatQueryDto,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+
+    for await (const chunk of this.ragService.streamChat(dto)) {
+      res.write(chunk)
+    }
+
+    res.end()
   }
 }

@@ -40,21 +40,13 @@ export interface ChatResponse {
   query: string
   answer: string
   confidence: 'high' | 'medium' | 'low'
-  contextUsed: boolean
-  sources: Array<{
-    id: string
-    title: string
-    content: string
-    similarity: number
-    metadata: Record<string, any>
-  }>
   retrievedAt: string
 }
 
 @Injectable()
 export class RagService {
   private readonly ai: GoogleGenAI
-  private readonly EMBEDDING_MODEL = 'text-embedding-004'
+  private readonly EMBEDDING_MODEL = 'models/gemini-embedding-001'
   private readonly CHAT_MODEL = 'gemini-2.5-flash'
 
   constructor(private readonly prisma: PrismaService) {
@@ -66,6 +58,7 @@ export class RagService {
       const response = await this.ai.models.embedContent({
         model: this.EMBEDDING_MODEL,
         contents: [{ parts: [{ text }] }],
+        config: { outputDimensionality: 768 },
       })
       const values = response.embeddings?.[0]?.values
       if (!values || values.length === 0) throw new Error('Empty embedding returned')
@@ -81,8 +74,8 @@ export class RagService {
       const vectorStr = `[${embedding.join(',')}]`
 
       const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
-        `INSERT INTO rag_documents (title, content, metadata, embedding)
-         VALUES ($1, $2, $3::jsonb, $4::vector)
+        `INSERT INTO rag_documents (title, content, metadata, embedding, updated_at)
+         VALUES ($1, $2, $3::jsonb, $4::vector, now())
          RETURNING id`,
         dto.title,
         dto.content,
@@ -203,16 +196,40 @@ Respond with valid JSON only, exactly in this format:
       query: dto.query,
       answer: geminiResult.answer,
       confidence: geminiResult.confidence,
-      contextUsed: geminiResult.contextUsed,
-      sources: sources.map((s) => ({
-        id: s.id,
-        title: s.title,
-        content: s.content,
-        similarity: s.similarity,
-        metadata: s.metadata,
-      })),
       retrievedAt: new Date().toISOString(),
     }
+  }
+
+  async *streamChat(dto: ChatQueryDto): AsyncGenerator<string> {
+    const sources = await this.searchSimilar(dto.query, dto.topK ?? 5)
+    const top2 = sources.slice(0, 2)
+
+    const contextBlock = top2
+      .map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`)
+      .join('\n\n---\n\n')
+
+    const prompt = `You are a helpful assistant. Answer ONLY from the context below.
+
+Context:
+---
+${contextBlock}
+---
+
+Question: ${dto.query}
+
+Rules: Answer from context only. If insufficient, say so. Be concise.`
+
+    const stream = await this.ai.models.generateContentStream({
+      model: this.CHAT_MODEL,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    })
+
+    for await (const chunk of stream) {
+      const text = chunk.text ?? ''
+      if (text) yield `data: ${JSON.stringify({ text })}\n\n`
+    }
+
+    yield `data: [DONE]\n\n`
   }
 
   async listDocuments(): Promise<RagDocument[]> {

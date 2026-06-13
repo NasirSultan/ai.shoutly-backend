@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS rag_documents (
   content     TEXT        NOT NULL,
   source      TEXT        NOT NULL DEFAULT '',
   metadata    JSONB       NOT NULL DEFAULT '{}',
-  embedding   vector(768),
+  embedding   vector(3072),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS rag_documents (
 -- Increase lists value as your document count grows (lists ≈ sqrt(row_count))
 CREATE INDEX IF NOT EXISTS rag_documents_embedding_idx
   ON rag_documents
-  USING ivfflat (embedding vector_cosine_ops)
+  USING hnsw (embedding vector_cosine_ops)
   WITH (lists = 100);
 
 -- Auto-update updated_at on row change
