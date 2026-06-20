@@ -55,7 +55,7 @@ model User {
 
 enum SocialPlatform {
   FACEBOOK
-  TWITTER
+  X
   LINKEDIN
   INSTAGRAM
 }

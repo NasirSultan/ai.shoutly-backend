@@ -11,19 +11,21 @@ export class AutopostService {
   private readonly outstandApiKey = "ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta";
   private readonly outstandBaseUrl = 'https://api.outstand.so/v1';
   // ✅ Add this private helper at the top of AutopostService class
-  private normalizePlatform(raw: string | null | undefined): 'FACEBOOK' | 'INSTAGRAM' | 'LINKEDIN' | 'X' {
-    const map: Record<string, 'FACEBOOK' | 'INSTAGRAM' | 'LINKEDIN' | 'X'> = {
+  private normalizePlatform(raw: string | null | undefined): SocialPlatform {
+    const map: Record<string, SocialPlatform> = {
       facebook: 'FACEBOOK',
       instagram: 'INSTAGRAM',
       linkedin: 'LINKEDIN',
-      x: 'X'
-    }
-    const normalized = map[raw?.toLowerCase()?.trim() ?? '']
+      x: 'X',
+    };
+
+    const normalized = map[raw?.toLowerCase()?.trim() ?? ''];
+
     if (!normalized) {
-      console.warn(`[Platform] Unknown platform value received: "${raw}", defaulting to FACEBOOK`)
-      return 'FACEBOOK'
+      throw new BadRequestException(`Invalid platform: ${raw}`);
     }
-    return normalized
+
+    return normalized;
   }
   
   constructor() {
@@ -107,10 +109,14 @@ export class AutopostService {
 
   async publishImmediately(userId: string, dto: PublishPostDto) {
     // 1. Resolve outstandAccountIds from platforms via DB
+    const platforms: SocialPlatform[] = dto.platforms.map(p =>
+      this.normalizePlatform(p)
+    );
+
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
-        platform: { in: dto.platforms.map(p => p.toUpperCase()) as SocialPlatform[] },
+        platform: { in: platforms },
       },
     });
 
@@ -194,12 +200,15 @@ export class AutopostService {
   }
 
   async scheduleForLater(userId: string, dto: SchedulePostDto) {
-    // 1. Resolve outstandAccountIds from platforms via DB
     
+    const platforms: SocialPlatform[] = dto.platforms.map(p =>
+      this.normalizePlatform(p)
+    );
+
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
-        platform: { in: dto.platforms.map(p => p.toUpperCase()) as SocialPlatform[] },
+        platform: { in: platforms },
       },
     });
     
@@ -473,12 +482,14 @@ export class AutopostService {
         select: { connectedSocials: true }
       })
 
-      if (user && !user.connectedSocials.includes(platformEnum as any)) {
+      // Look for where you do user.update near the bottom of saveDirectConnection:
+      if (user && !user.connectedSocials.includes(platformEnum)) {
         await this.prisma.user.update({
           where: { id: userId },
           data: {
             connectedSocials: {
-              set: [...user.connectedSocials, platformEnum as any]
+              // Cast platformEnum as any here to satisfy the compiler
+              set: [...user.connectedSocials, platformEnum] 
             }
           }
         })
@@ -497,6 +508,7 @@ export class AutopostService {
   }  
   
   // Webhook intake to log finalized connections coming over the wire asynchronously
+  // Webhook intake to log finalized connections coming over the wire asynchronously
   async handleIncomingWebhook(payload: any) {
     const { event, data } = payload;
 
@@ -504,6 +516,9 @@ export class AutopostService {
       const localUserId = data.state; // Recovering original tracking string passed inside state parameter
 
       if (!localUserId) return { processed: false, reason: 'No tracking state located' };
+
+      // Use your private helper to map the incoming platform correctly to the exact string Prisma expects
+      const structuralPlatform = this.normalizePlatform(data.platform);
 
       await this.prisma.socialAccount.upsert({
         where: { outstandAccountId: data.id },
@@ -515,7 +530,8 @@ export class AutopostService {
         create: {
           userId: localUserId,
           outstandAccountId: data.id,
-          platform: data.platform,
+          // Use the normalization helper and cast as any
+          platform: this.normalizePlatform(data.platform) as any, 
           username: data.username,
           avatarUrl: data.avatarUrl,
           status: 'active',
