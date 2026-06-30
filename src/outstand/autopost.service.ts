@@ -48,7 +48,7 @@ export class AutopostService {
         },
         // 3. You MUST provide the redirect_uri in the body payload
         body: JSON.stringify({
-          redirect_uri: 'https://shoutlyai.com/dashboards?status=connecting', // Replace with your real app callback
+          redirect_uri: 'https://shoutlyai.com/dashboards/settings/account', // Replace with your real app callback
           state: userId // You can safely pass your state/userId here inside the body object
         }),
       });
@@ -68,7 +68,127 @@ export class AutopostService {
       throw new InternalServerErrorException('Error contacting Outstand service layer');
     }
   }
+  // ── Used by the accounts page to know what's connected vs not ──
+  async getConnectionStatus(userId: string) {
+    const accounts = await this.prisma.$queryRaw<any[]>`
+      SELECT id, "outstandAccountId", platform, username, status, "avatarUrl", "updatedAt"
+      FROM "SocialAccount"
+      WHERE "userId" = ${userId}
+    `;
 
+    const byPlatform: Record<string, any> = {};
+    for (const acc of accounts) {
+      byPlatform[acc.platform] = acc;
+    }
+
+    // Only platforms normalizePlatform() actually supports today
+    const SUPPORTED_PLATFORMS = ['FACEBOOK', 'INSTAGRAM', 'LINKEDIN', 'X'];
+
+    const platforms = SUPPORTED_PLATFORMS.map((platform) => {
+      const acc = byPlatform[platform];
+      if (!acc) {
+        return { platform, connected: false, accounts: [] };
+      }
+      return {
+        platform,
+        connected: acc.status === 'active',
+        accounts: [
+          {
+            id: acc.id,
+            outstandAccountId: acc.outstandAccountId,
+            username: acc.username,
+            avatarUrl: acc.avatarUrl,
+            status: acc.status,
+            lastSync: acc.updatedAt,
+          },
+        ],
+      };
+    });
+
+    return { success: true, platforms };
+  }
+
+  // ── Lightweight per-platform stats for the accounts page (not the full dashboard chart payload) ──
+  async getAccountsOverviewAnalytics(userId: string) {
+    try {
+      const connectedChannels: any[] = await this.prisma.$queryRaw`
+        SELECT "outstandAccountId", platform, username
+        FROM "SocialAccount"
+        WHERE "userId" = ${userId} AND status = 'active'
+      `;
+
+      if (!connectedChannels || connectedChannels.length === 0) {
+        return {
+          success: true,
+          totals: { connected: 0, totalFollowers: 0, postsQueued: 0, avgEngagementRate: 0 },
+          platforms: {},
+        };
+      }
+
+      const postsQueued = await this.prisma.post.count({
+        where: { userId, status: 'SCHEDULED' },
+      });
+
+      const platformStats: Record<string, any> = {};
+      let totalFollowers = 0;
+      let totalReachCombined = 0;
+      let totalEngagementCombined = 0;
+
+      for (const channel of connectedChannels) {
+        try {
+          const platformKey = channel.platform.toUpperCase();
+          const url = `${this.outstandBaseUrl}/social-accounts/${channel.outstandAccountId}/metrics`;
+          const response = await axios.get(url, {
+            headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+          });
+          const dataPayload = response.data?.data || response.data || {};
+
+          const followers = Number(dataPayload.followers_count || dataPayload.followers || 0);
+          const engagementObj = dataPayload.engagement || {};
+          const reach = Number(engagementObj.reach || engagementObj.views || 0);
+          const likes = Number(engagementObj.likes || 0);
+          const comments = Number(engagementObj.comments || 0);
+          const shares = Number(engagementObj.shares || engagementObj.retweets || 0);
+          const saves = Number(engagementObj.saves || 0);
+          const engagement = Number(engagementObj.total_interactions || (likes + comments + shares + saves));
+          const engagementRate = reach > 0 ? Math.round((engagement / reach) * 100 * 100) / 100 : 0;
+
+          totalFollowers += followers;
+          totalReachCombined += reach;
+          totalEngagementCombined += engagement;
+
+          platformStats[platformKey] = {
+            followers,
+            reach,
+            engagement,
+            engagementRate,
+            username: channel.username,
+          };
+        } catch (err) {
+          console.error(`[Accounts Overview] Skipped ${channel.outstandAccountId}:`, err.response?.data || err.message);
+        }
+      }
+
+      const avgEngagementRate =
+        totalReachCombined > 0
+          ? Math.round((totalEngagementCombined / totalReachCombined) * 100 * 100) / 100
+          : 0;
+
+      return {
+        success: true,
+        totals: {
+          connected: connectedChannels.length,
+          totalFollowers,
+          postsQueued,
+          avgEngagementRate,
+        },
+        platforms: platformStats,
+      };
+    } catch (error) {
+      console.error('Accounts overview analytics failed:', error.message);
+      throw new InternalServerErrorException('Accounts overview analytics failed.');
+    }
+  }
   async getUserAccounts(userId: string) {
     // ✅ Raw query bypasses Prisma enum validation entirely
     const accounts = await this.prisma.$queryRaw`

@@ -1,10 +1,21 @@
-import { Controller, Post, Body, Req, UseGuards, Get, Query } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Req,
+  UseGuards,
+  Get,
+  Query,
+} from '@nestjs/common';
 import { AutopostService } from './autopost.service';
 import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
 import { SchedulePostDto } from './dto/schedule-post.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
-import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 
 @Controller('autopost')
 export class AutopostController {
@@ -16,7 +27,7 @@ export class AutopostController {
     const userId = req.user.id;
     return this.autopostService.getConnectUrl(userId, dto);
   }
-  
+
   @Post('accounts')
   @UseGuards(AuthGuard)
   getMyAccounts(@Req() req) {
@@ -24,17 +35,28 @@ export class AutopostController {
   }
 
   @Get('analytics')
-    @UseGuards(AuthGuard)
-    async getDashboardAnalytics(
-      @Req() req,
-      @Query('from') from?: string,
-      @Query('to') to?: string,
-    ) {
-      const userId = req.user.id;
-      // Pass the query strings from the frontend directly into your service method
-      return this.autopostService.calculateUserDashboardMetrics(userId, from, to);
-    }
-  
+  @UseGuards(AuthGuard)
+  async getDashboardAnalytics(
+    @Req() req,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const userId = req.user.id;
+    // Pass the query strings from the frontend directly into your service method
+    return this.autopostService.calculateUserDashboardMetrics(userId, from, to);
+  }
+
+  @Get('connection-status')
+  @UseGuards(AuthGuard)
+  getConnectionStatus(@Req() req) {
+    return this.autopostService.getConnectionStatus(req.user.id);
+  }
+
+  @Get('accounts-overview')
+  @UseGuards(AuthGuard)
+  getAccountsOverview(@Req() req) {
+    return this.autopostService.getAccountsOverviewAnalytics(req.user.id);
+  }
 
   @Post('fix-accounts')
   async fixAccountPlatforms() {
@@ -67,25 +89,30 @@ export class AutopostController {
       throw new BadRequestException('Missing session token');
     }
 
-    const outstandApiKey = "ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta";
+    const outstandApiKey =
+      'ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta';
     const outstandBaseUrl = 'https://api.outstand.so/v1';
 
     try {
       const pendingUrl = `${outstandBaseUrl}/social-accounts/pending/${body.sessionToken}`;
-      const pendingResponse = await fetch(pendingUrl, { 
+      const pendingResponse = await fetch(pendingUrl, {
         method: 'GET',
-        headers: { 'Authorization': `Bearer ${outstandApiKey}` }
+        headers: { Authorization: `Bearer ${outstandApiKey}` },
       });
 
       if (!pendingResponse.ok) {
-        throw new BadRequestException('Invalid or expired Outstand session token.');
+        throw new BadRequestException(
+          'Invalid or expired Outstand session token.',
+        );
       }
 
       const resBody = await pendingResponse.json();
       const availablePages = resBody?.data?.availablePages;
 
       if (!Array.isArray(availablePages) || availablePages.length === 0) {
-        throw new BadRequestException('No authorized Facebook pages found inside this session.');
+        throw new BadRequestException(
+          'No authorized Facebook pages found inside this session.',
+        );
       }
 
       // CORRECT FORMAT: Outstand validator strictly requires a flat array of string IDs
@@ -95,11 +122,11 @@ export class AutopostController {
       const finalizeResponse = await fetch(finalizeUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${outstandApiKey}`,
+          Authorization: `Bearer ${outstandApiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          selectedPageIds: selectedPageIds // Send the flat array of strings
+          selectedPageIds: selectedPageIds, // Send the flat array of strings
         }),
       });
 
@@ -113,48 +140,64 @@ export class AutopostController {
       }
 
       if (!finalizeResponse.ok || finalizeData.success === false) {
-        console.error('Outstand Finalize Submission Error Content:', finalizeData);
-        throw new BadRequestException(finalizeData.message || 'Outstand rejected the account activation payload.');
+        console.error(
+          'Outstand Finalize Submission Error Content:',
+          finalizeData,
+        );
+        throw new BadRequestException(
+          finalizeData.message ||
+            'Outstand rejected the account activation payload.',
+        );
       }
 
       return { success: true, data: finalizeData };
-
     } catch (error) {
       console.error('Error finalizing Outstand account:', error);
       if (error instanceof BadRequestException) throw error;
-      throw new InternalServerErrorException('Handshake failed during account selection assembly');
+      throw new InternalServerErrorException(
+        'Handshake failed during account selection assembly',
+      );
     }
   }
 
   @Post('handle-callback')
-    @UseGuards(AuthGuard)
-    async handlePlatformCallback(@Req() req, @Body() body: { 
-      sessionToken?: string; 
-      account_id?: string; 
-      network_unique_id?: string; 
+  @UseGuards(AuthGuard)
+  async handlePlatformCallback(
+    @Req() req,
+    @Body()
+    body: {
+      sessionToken?: string;
+      account_id?: string;
+      network_unique_id?: string;
       username?: string;
-      network?: string; 
-    }) {
-      const userId = req.user.id;
+      network?: string;
+    },
+  ) {
+    const userId = req.user.id;
 
-      // 🅰️ FLOW A: TWO-STEP HANDSHAKE (Facebook)
-      if (body.sessionToken) {
-        return this.autopostService.finalizeTwoStepConnection(userId, body.sessionToken);
-      }
-
-      // 🅱️ FLOW B: IMMEDIATE CONNECTION (Instagram, LinkedIn, etc.)
-      if (body.account_id) {
-        return this.autopostService.saveDirectConnection(userId, {
-          outstandAccountId: body.account_id,
-          // Use ?? to provide absolute fallback strings so TypeScript compiles perfectly
-          networkUniqueId: body.network_unique_id ?? '', 
-          username: body.username ?? 'Unknown Account',
-          platform: body.network ?? 'INSTAGRAM' 
-        });
-      }
-
-      throw new BadRequestException('Invalid callback state parameters provided.');
+    // 🅰️ FLOW A: TWO-STEP HANDSHAKE (Facebook)
+    if (body.sessionToken) {
+      return this.autopostService.finalizeTwoStepConnection(
+        userId,
+        body.sessionToken,
+      );
     }
+
+    // 🅱️ FLOW B: IMMEDIATE CONNECTION (Instagram, LinkedIn, etc.)
+    if (body.account_id) {
+      return this.autopostService.saveDirectConnection(userId, {
+        outstandAccountId: body.account_id,
+        // Use ?? to provide absolute fallback strings so TypeScript compiles perfectly
+        networkUniqueId: body.network_unique_id ?? '',
+        username: body.username ?? 'Unknown Account',
+        platform: body.network ?? 'INSTAGRAM',
+      });
+    }
+
+    throw new BadRequestException(
+      'Invalid callback state parameters provided.',
+    );
+  }
 
   // 🔬 TEMPORARY TESTING ENDPOINT: Get all connected social accounts
   @Post('test-fetch-accounts')
