@@ -49,7 +49,8 @@ export class AutopostService {
         },
         // 3. You MUST provide the redirect_uri in the body payload
         body: JSON.stringify({
-          redirect_uri: 'https://shoutlyai.com/dashboards/settings/accounts', // Replace with your real app callback
+          // redirect_uri: 'https://shoutlyai.com/dashboards/settings/accounts', // Replace with your real app callback
+          redirect_uri: 'https://6afa55be-ad49-4311-974d-1def01b3a834-00-355gnyxvxaw1u.pike.replit.dev/dashboards/settings/accounts',
           state: userId // You can safely pass your state/userId here inside the body object
         }),
       });
