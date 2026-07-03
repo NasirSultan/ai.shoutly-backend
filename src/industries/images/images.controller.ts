@@ -6,7 +6,8 @@ import {
   Param,
   Query,
   Get,
-  Delete
+  Delete,
+  Patch
 } from '@nestjs/common'
 import { FilesInterceptor } from '@nestjs/platform-express'
 import { ImagesService } from './images.service'
@@ -55,6 +56,26 @@ export class ImagesController {
 
 
   
+  @Get('deleted')
+  async getDeletedImages(@Param('subIndustryId') subIndustryId: string) {
+    return this.imagesService.getDeletedImages(subIndustryId)
+  }
+
+  @Patch('restore/all')
+  async restoreAllImages(@Param('subIndustryId') subIndustryId: string) {
+    return this.imagesService.restoreAllImages(subIndustryId)
+  }
+
+  @Patch('restore/:imageId')
+  async restoreImage(@Param('imageId') imageId: string) {
+    return this.imagesService.restoreImage(imageId)
+  }
+
+  @Delete('all')
+  async deleteAllImages() {
+    return this.imagesService.deleteAllImages()
+  }
+
   @Delete()
   async deleteImages(
     @Param('subIndustryId') subIndustryId: string,

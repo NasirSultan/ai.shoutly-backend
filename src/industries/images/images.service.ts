@@ -118,7 +118,7 @@ async createMultipleSafe(
 
   async findAll(subIndustryId: string) {
     return prisma.image.findMany({
-      where: { subIndustryId }
+      where: { subIndustryId, deletedAt: null }
     })
   }
 
@@ -136,11 +136,11 @@ async createMultipleSafe(
 
     const [textTrue, textFalse] = await Promise.all([
       prisma.image.findMany({
-        where: { subIndustryId, text: true },
+        where: { subIndustryId, text: true, deletedAt: null },
         select: { id: true, file: true }
       }),
       prisma.image.findMany({
-        where: { subIndustryId, text: false },
+        where: { subIndustryId, text: false, deletedAt: null },
         select: { id: true, file: true }
       })
     ])
@@ -166,8 +166,8 @@ async createMultipleSafe(
 
 async deleteBySubIndustryAndText(subIndustryId: string, text: boolean) {
   const images = await prisma.image.findMany({
-    where: { subIndustryId, text },
-    select: { id: true, deleteUrl: true }
+    where: { subIndustryId, text, deletedAt: null },
+    select: { id: true }
   })
 
   if (images.length === 0) {
@@ -177,29 +177,60 @@ async deleteBySubIndustryAndText(subIndustryId: string, text: boolean) {
     }
   }
 
-  const deleteUrls = images
-    .map(img => img.deleteUrl)
-    .filter(url => !!url)
-
-  if (deleteUrls.length > 0) {
-    await this.deleteFromImgbb(deleteUrls)
-  }
-
-  const deleted = await prisma.image.deleteMany({
-    where: { subIndustryId, text }
+  const updated = await prisma.image.updateMany({
+    where: { subIndustryId, text, deletedAt: null },
+    data: { deletedAt: new Date() }
   })
 
   return {
     success: true,
-    message: `Deleted ${deleted.count} image(s) from database and ${deleteUrls.length} image(s) from ImgBB.`,
-    deletedCount: deleted.count,
-    deletedFromImgBB: deleteUrls.length
+    message: `Soft deleted ${updated.count} image(s).`,
+    deletedCount: updated.count
   }
 }
 
 
 
- async getImagesBySubIndustry(subIndustryId?: string) {
+ async getDeletedImages(subIndustryId?: string) {
+  return prisma.image.findMany({
+    where: {
+      deletedAt: { not: null },
+      ...(subIndustryId ? { subIndustryId } : {})
+    },
+    select: { id: true, file: true, text: true, subIndustryId: true, deletedAt: true }
+  })
+}
+
+async restoreImage(imageId: string) {
+  const image = await prisma.image.findUnique({ where: { id: imageId } })
+  if (!image) throw new NotFoundException('Image not found')
+  if (!image.deletedAt) throw new BadRequestException('Image is not deleted')
+
+  await prisma.image.update({ where: { id: imageId }, data: { deletedAt: null } })
+  return { success: true, message: 'Image restored successfully' }
+}
+
+async restoreAllImages(subIndustryId?: string) {
+  const updated = await prisma.image.updateMany({
+    where: {
+      deletedAt: { not: null },
+      ...(subIndustryId ? { subIndustryId } : {})
+    },
+    data: { deletedAt: null }
+  })
+  return { success: true, message: `Restored ${updated.count} image(s).`, restoredCount: updated.count }
+}
+
+async deleteAllImages() {
+  const deleted = await prisma.image.deleteMany()
+  return {
+    success: true,
+    message: `Deleted ${deleted.count} image(s) from database.`,
+    deletedCount: deleted.count
+  }
+}
+
+async getImagesBySubIndustry(subIndustryId?: string) {
     const redis = this.redisService.getClient()
     const cacheKey = subIndustryId ? `subIndustry:${subIndustryId}:images` : 'allImages'
     const cacheTTL = 3600
@@ -217,7 +248,7 @@ async deleteBySubIndustryAndText(subIndustryId: string, text: boolean) {
         images = await prisma.$queryRaw`
           SELECT id, file, "subIndustryId"
           FROM "Image"
-          WHERE "subIndustryId" = ${subIndustryId}
+          WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
           ORDER BY RANDOM()
           LIMIT 15
         `
@@ -225,6 +256,7 @@ async deleteBySubIndustryAndText(subIndustryId: string, text: boolean) {
         images = await prisma.$queryRaw`
           SELECT id, file, "subIndustryId"
           FROM "Image"
+          WHERE "deletedAt" IS NULL
           ORDER BY RANDOM()
           LIMIT 15
         `
@@ -238,20 +270,12 @@ async deleteBySubIndustryAndText(subIndustryId: string, text: boolean) {
 
 
  async deleteImageById(imageId: string) {
-    const image = await prisma.image.findUnique({ where: { id: imageId } })
+    const image = await prisma.image.findUnique({ where: { id: imageId, deletedAt: null } })
     if (!image) throw new NotFoundException('Image not found')
 
-    if (image.deleteUrl) {
-      try {
-        await axios.get(image.deleteUrl)
-      } catch (error) {
-        console.error('Failed to delete image from ImgBB:', error.message)
-      }
-    }
-
     try {
-      await prisma.image.delete({ where: { id: imageId } })
-      return { success: true, message: 'Image deleted successfully' }
+      await prisma.image.update({ where: { id: imageId }, data: { deletedAt: new Date() } })
+      return { success: true, message: 'Image soft deleted successfully' }
     } catch (error) {
       throw new InternalServerErrorException('Failed to delete image from database')
     }
@@ -267,7 +291,7 @@ async getOneTextImageBySubIndustry(subIndustryId: string) {
   const images = (await prisma.$queryRaw<ImageType[]>`
     SELECT id, file, "subIndustryId"
     FROM "Image"
-    WHERE "subIndustryId" = ${subIndustryId} AND text = true
+    WHERE "subIndustryId" = ${subIndustryId} AND text = true AND "deletedAt" IS NULL
     ORDER BY RANDOM()
     LIMIT 1
   `) as ImageType[]

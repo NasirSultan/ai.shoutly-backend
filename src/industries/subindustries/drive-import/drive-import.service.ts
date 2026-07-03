@@ -1,106 +1,142 @@
-import { Injectable } from '@nestjs/common'
-import { PrismaClient } from '@prisma/client'
+import { Injectable, Logger } from '@nestjs/common'
+import { PrismaService } from '../../../lib/prisma.service'
 import { google } from 'googleapis'
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { v4 as uuidv4 } from 'uuid'
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const sharp = require('sharp') as typeof import('sharp')
 
 @Injectable()
 export class DriveImportService {
-  private prisma = new PrismaClient()
+  private s3: S3Client
+  private bucketName: string
+  private region: string
+  private logger = new Logger('DriveImportService')
+
+  constructor(private readonly prisma: PrismaService) {
+    this.bucketName = process.env.AWS_BUCKET_NAME || ''
+    this.region = process.env.AWS_REGION || 'ap-south-1'
+    this.s3 = new S3Client({
+      region: this.region,
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID as string,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY as string
+      }
+    })
+  }
 
   private getDriveClient() {
     const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON as string)
-
     const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: ['https://www.googleapis.com/auth/drive.readonly']
     })
-
     return google.drive({ version: 'v3', auth })
+  }
+
+  private getS3Url(key: string): string {
+    return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${key}`
+  }
+
+  private async compressImage(buffer: Buffer): Promise<Buffer> {
+    const TARGET_SIZE = 900 * 1024 // 900KB — safely under 1MB
+    let quality = 85
+
+    let compressed = await sharp(buffer).jpeg({ quality, mozjpeg: true }).toBuffer()
+
+    while (compressed.length > TARGET_SIZE && quality > 40) {
+      quality -= 10
+      compressed = await sharp(buffer).jpeg({ quality, mozjpeg: true }).toBuffer()
+    }
+
+    return compressed
+  }
+
+  private async uploadDriveFileToS3(drive: any, fileId: string): Promise<string> {
+    const key = `images/${uuidv4()}.jpg`
+
+    const response = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'arraybuffer' }
+    )
+
+    const rawBuffer = Buffer.from(response.data as ArrayBuffer)
+    const compressed = await this.compressImage(rawBuffer)
+
+    await this.s3.send(new PutObjectCommand({
+      Bucket: this.bucketName,
+      Key: key,
+      Body: compressed,
+      ContentType: 'image/jpeg',
+      ACL: 'public-read'
+    }))
+
+    return this.getS3Url(key)
   }
 
   async importFromDrive(subIndustryId: string, folderId: string) {
     const drive = this.getDriveClient()
 
-    // 1. Check subIndustry exists
     const subIndustry = await this.prisma.subIndustry.findUnique({
       where: { id: subIndustryId }
     })
 
     if (!subIndustry) {
-      return {
-        success: false,
-        message: 'SubIndustry not found'
-      }
+      return { success: false, message: 'SubIndustry not found' }
     }
 
-    // 2. Get files from Google Drive
     const res = await drive.files.list({
       q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
-      fields: 'files(id, name)'
+      fields: 'files(id, name, mimeType)'
     })
 
     const files = res.data.files || []
-    console.log('Files:', files);
+    this.logger.log(`Found ${files.length} file(s) in Drive folder`)
 
     let imported = 0
     let skipped = 0
     let failed = 0
 
-    const batch: {
-      file: string
-      subIndustryId: string
-      deleteUrl: string
-    }[] = []
+    const processFile = async (file: any) => {
+      const fileId = file.id!
+      const driveUrl = `https://drive.google.com/uc?export=view&id=${fileId}`
 
-    for (const file of files) {
-      try {
-        const fileId = file.id
-        // Constructing the direct view URL
-        const url = `https://drive.google.com/uc?export=view&id=${fileId}`
+      const exists = await this.prisma.image.findFirst({
+        where: { driveUrl, subIndustryId }
+      })
 
-        // 3. Duplicate check
-        const exists = await this.prisma.image.findFirst({
-          where: {
-            file: url,
-            subIndustryId
-          }
-        })
-
-        if (exists) {
-          skipped++
-          continue
-        }
-
-        batch.push({
-          file: url,
-          subIndustryId,
-          deleteUrl: ''
-        })
-
-        // 4. Batch insert every 20
-        if (batch.length === 20) {
-          await this.prisma.image.createMany({
-            data: batch
-          })
-          imported += batch.length
-          batch.length = 0
-        }
-      } catch (e) {
-        failed++
+      if (exists) {
+        skipped++
+        this.logger.log(`⏭ Skipped ${file.name} (duplicate)`)
+        return
       }
+
+      const s3Url = await this.uploadDriveFileToS3(drive, fileId)
+
+      await this.prisma.image.create({
+        data: { file: s3Url, driveUrl, subIndustryId, deleteUrl: '' }
+      })
+
+      this.logger.log(`✅ Imported ${file.name} → ${s3Url}`)
+      imported++
     }
 
-    // 5. Insert remaining
-    if (batch.length > 0) {
-      await this.prisma.image.createMany({ data: batch })
-      imported += batch.length
-    }
+    await Promise.allSettled(
+      files.map(file =>
+        processFile(file).catch((e: any) => {
+          this.logger.error(`❌ Failed ${file.name}: ${e.message}`)
+          failed++
+        })
+      )
+    )
 
     return {
       success: true,
+      total: files.length,
       imported,
-      skipped,
+      skippedDuplicates: skipped,
       failed,
-      total: files.length
+      message: `${imported} imported, ${skipped} skipped (already exist), ${failed} failed out of ${files.length} total.`
     }
   }
 }

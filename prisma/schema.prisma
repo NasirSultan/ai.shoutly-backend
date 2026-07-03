@@ -170,6 +170,8 @@ model Image {
   subIndustryId String
   calendarPosts CalendarPost[]
   createdAt     DateTime    @default(now())
+  deletedAt     DateTime?
+  driveUrl      String?
 
   @@index([subIndustryId])
 }

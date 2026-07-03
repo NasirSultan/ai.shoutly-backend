@@ -11,6 +11,7 @@ import { ImagesService } from './images/images.service'
 import { RedisModule } from '../common/redis/redis.module'
 import { ContentModule } from './subindustries/content/content.module';
 import { DriveImportModule } from './subindustries/drive-import/drive-import.module'
+import { DriveDeliverModule } from './subindustries/drive-deliver/drive-deliver.module'
 
 @Module({
   imports: [
@@ -18,7 +19,8 @@ import { DriveImportModule } from './subindustries/drive-import/drive-import.mod
       limits: { fileSize: 5 * 1024 * 1024 }, // optional limit 5MB
     }),RedisModule, ReelsModule,
     ContentModule,
-    DriveImportModule 
+    DriveImportModule,
+    DriveDeliverModule
   ],
   controllers: [IndustriesController, SubindustriesController, ImagesController,DisplayImagesController],
   providers: [IndustriesService, SubindustriesService, ImagesService],
