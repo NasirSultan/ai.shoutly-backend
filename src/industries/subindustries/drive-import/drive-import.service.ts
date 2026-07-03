@@ -121,14 +121,20 @@ export class DriveImportService {
       imported++
     }
 
-    await Promise.allSettled(
-      files.map(file =>
-        processFile(file).catch((e: any) => {
+    // Worker pool: 5 concurrent workers pull from a shared queue.
+    // Keeps DB connections within pgBouncer limits while maximising throughput.
+    const CONCURRENCY = 5
+    const queue = [...files]
+    const workers = Array.from({ length: CONCURRENCY }, async () => {
+      while (queue.length) {
+        const file = queue.shift()!
+        await processFile(file).catch((e: any) => {
           this.logger.error(`❌ Failed ${file.name}: ${e.message}`)
           failed++
         })
-      )
-    )
+      }
+    })
+    await Promise.all(workers)
 
     return {
       success: true,
