@@ -52,6 +52,7 @@
     "mailersend": "^2.6.0",
     "multer": "^2.0.2",
     "node-fetch": "^3.3.2",
+    "openai": "^6.45.0",
     "redis": "^5.10.0",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.0",
