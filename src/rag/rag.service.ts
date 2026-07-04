@@ -1,5 +1,5 @@
 import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common'
-import { GoogleGenAI } from '@google/genai'
+import OpenAI from 'openai'
 import { PrismaService } from '../lib/prisma.service'
 import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
@@ -43,24 +43,28 @@ export interface ChatResponse {
   retrievedAt: string
 }
 
+// OpenAI — embeddings only (text-embedding-3-small, 768-dim matches DB schema)
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+
+// DeepSeek — chat and stream via OpenAI-compatible SDK
+const deepseek = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: 'https://api.deepseek.com',
+})
+const CHAT_MODEL = 'deepseek-chat'
+
 @Injectable()
 export class RagService {
-  private readonly ai: GoogleGenAI
-  private readonly EMBEDDING_MODEL = 'models/gemini-embedding-001'
-  private readonly CHAT_MODEL = 'gemini-2.5-flash'
-
-  constructor(private readonly prisma: PrismaService) {
-    this.ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY })
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   async embedText(text: string): Promise<number[]> {
     try {
-      const response = await this.ai.models.embedContent({
-        model: this.EMBEDDING_MODEL,
-        contents: [{ parts: [{ text }] }],
-        config: { outputDimensionality: 768 },
+      const response = await openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: text,
+        dimensions: 768,
       })
-      const values = response.embeddings?.[0]?.values
+      const values = response.data[0]?.embedding
       if (!values || values.length === 0) throw new Error('Empty embedding returned')
       return values
     } catch (error: any) {
@@ -95,23 +99,18 @@ export class RagService {
 
   async bulkIndexDocuments(dto: BulkUploadDto): Promise<BulkIndexResult> {
     const results: IndexResult[] = []
-
     for (const doc of dto.documents) {
-      const result = await this.indexDocument(doc)
-      results.push(result)
+      results.push(await this.indexDocument(doc))
     }
-
     const indexed = results.filter((r) => r.success).length
     const failed = results.filter((r) => !r.success).length
-    const allSuccess = failed === 0
-
     return {
-      success: allSuccess,
+      success: failed === 0,
       total: dto.documents.length,
       indexed,
       failed,
       results,
-      message: allSuccess
+      message: failed === 0
         ? `All ${indexed} document(s) indexed successfully`
         : `${indexed} of ${dto.documents.length} indexed — ${failed} failed`,
     }
@@ -175,28 +174,28 @@ Respond with valid JSON only, exactly in this format:
   "contextUsed": <true|false>
 }`
 
-    let geminiResult: { answer: string; confidence: 'high' | 'medium' | 'low'; contextUsed: boolean }
-
     try {
-      const result = await this.ai.models.generateContent({
-        model: this.CHAT_MODEL,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      const completion = await deepseek.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: 'user', content: prompt }],
       })
 
-      const raw = (result.text ?? '').trim()
+      const raw = (completion.choices[0]?.message?.content ?? '').trim()
       const jsonMatch = raw.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) throw new Error('No JSON in response')
-      geminiResult = JSON.parse(jsonMatch[0])
+      if (!jsonMatch) throw new Error('No JSON in DeepSeek response')
+
+      const parsed: { answer: string; confidence: 'high' | 'medium' | 'low'; contextUsed: boolean } =
+        JSON.parse(jsonMatch[0])
+
+      return {
+        success: true,
+        query: dto.query,
+        answer: parsed.answer,
+        confidence: parsed.confidence,
+        retrievedAt: new Date().toISOString(),
+      }
     } catch (error: any) {
       throw new InternalServerErrorException(`Chat generation failed: ${error.message}`)
-    }
-
-    return {
-      success: true,
-      query: dto.query,
-      answer: geminiResult.answer,
-      confidence: geminiResult.confidence,
-      retrievedAt: new Date().toISOString(),
     }
   }
 
@@ -219,13 +218,14 @@ Question: ${dto.query}
 
 Rules: Answer from context only. If insufficient, say so. Be concise.`
 
-    const stream = await this.ai.models.generateContentStream({
-      model: this.CHAT_MODEL,
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    const stream = await deepseek.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
     })
 
     for await (const chunk of stream) {
-      const text = chunk.text ?? ''
+      const text = chunk.choices[0]?.delta?.content ?? ''
       if (text) yield `data: ${JSON.stringify({ text })}\n\n`
     }
 
