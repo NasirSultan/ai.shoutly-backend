@@ -10,7 +10,6 @@ export class PostGeneratorController {
 
   @Post('posts')
   async generate(
-    @Body('industryId') industryId: string | undefined,
     @Body('subIndustryId') subIndustryId: string | undefined,
     @Body('prompt') prompt: string,
     @Res() res: Response
@@ -21,7 +20,7 @@ export class PostGeneratorController {
     res.flushHeaders()
 
     await this.postGeneratorService.generateMixedPostsStreamed(
-      industryId,
+      undefined,
       subIndustryId,
       prompt,
       (event: StreamEvent) => {
@@ -74,10 +73,9 @@ async generateText(
   res.flushHeaders()
 
   await this.postGeneratorService.generateTextStreamed(prompt, (event) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`)
+    res.write(`data: ${JSON.stringify({ text: event.text })}\n\n`)
   })
 
-  res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
   res.end()
 }
 

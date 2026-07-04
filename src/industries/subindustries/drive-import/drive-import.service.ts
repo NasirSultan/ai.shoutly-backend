@@ -26,6 +26,12 @@ export class DriveImportService {
   }
 
   private getDriveClient() {
+    const apiKey = process.env.GOOGLE_DRIVE_API_KEY
+    if (apiKey) {
+      // API key mode — works with any folder set to "Anyone with the link can view"
+      return google.drive({ version: 'v3', auth: apiKey })
+    }
+    // Fallback: service account — folder must be explicitly shared with the service account
     const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON as string)
     const auth = new google.auth.GoogleAuth({
       credentials,

@@ -25,7 +25,7 @@
 
 // type OnPost = (event: StreamEvent) => void
 
-// const DB_DELAY_MS = 10000
+// const DB_DELAY_MS = 3000
 
 // @Injectable()
 // export class PostGeneratorService {
@@ -296,8 +296,14 @@ import { GeminiService } from '../lib/llm/geminillm/gemini.service'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { buildPostImagePrompt,buildUserTextPrompt, buildPostTextPrompt } from '../lib/prompt/post.prompt'
 import { Express } from 'express'
+import OpenAI from 'openai'
 
 const prisma = new PrismaClient()
+
+const deepseek = new OpenAI({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  baseURL: 'https://api.deepseek.com',
+})
 
 export interface GeneratedPost {
   image: { imageUrl: string; deleteUrl?: string }
@@ -341,7 +347,7 @@ type ResolvedMode = LLMOnlyMode | MixedMode
 
 type OnPost = (event: StreamEvent) => void
 
-const DB_DELAY_MS = 10000
+const DB_DELAY_MS = 3000
 
 @Injectable()
 export class PostGeneratorService {
@@ -356,53 +362,52 @@ export class PostGeneratorService {
     userPrompt: string,
     onPost: OnPost
   ): Promise<void> {
-    const mode = await this.resolveMode(industryId, subIndustryId, userPrompt)
-
-    if (mode.type === 'LLM_ONLY') {
-      await this.streamLLMOnly(userPrompt, mode.industry, mode.subIndustry, onPost)
-      return
-    }
-
-    const { industry, subIndustry, dbImages, textResults } = mode.data
-
-    const llm1Promise = this.generateAndUploadLLMImage(industry.name, subIndustry.name, userPrompt, 1)
-    const llm2Promise = this.generateAndUploadLLMImage(industry.name, subIndustry.name, userPrompt, 2)
-
-    const streamOrder: Array<{ type: 'DB'; dbIndex: number } | { type: 'LLM'; llmSlot: 1 | 2 }> = [
-      { type: 'DB',  dbIndex: 0 },
-      { type: 'DB',  dbIndex: 1 },
-      { type: 'LLM', llmSlot: 1 },
-      { type: 'DB',  dbIndex: 2 },
-      { type: 'DB',  dbIndex: 3 },
-      { type: 'DB',  dbIndex: 4 },
-      { type: 'LLM', llmSlot: 2 },
-    ]
-
-    let globalIndex = 0
-
-    for (const item of streamOrder) {
-      if (item.type === 'DB') {
-        await this.delay(DB_DELAY_MS)
-        const { text, hashtags } = textResults[globalIndex]
-        onPost({
-          index: globalIndex,
-          post: {
-            image: { imageUrl: dbImages[item.dbIndex].file },
-            text,
-            hashtags,
-            source: 'DB',
-            index: globalIndex,
-          },
+    const subIndustryRecord = subIndustryId
+      ? await prisma.subIndustry.findUnique({
+          where: { id: subIndustryId },
+          include: { industry: true },
         })
-      } else {
-        const { text, hashtags } = textResults[globalIndex]
-        const llmImage = await (item.llmSlot === 1 ? llm1Promise : llm2Promise)
-        onPost({
-          index: globalIndex,
-          post: { image: llmImage, text, hashtags, source: 'LLM', index: globalIndex },
-        })
-      }
-      globalIndex++
+      : null
+
+    const industryName = (subIndustryRecord as any)?.industry?.name ?? ''
+    const subIndustryName = subIndustryRecord?.name ?? ''
+
+    const dbImages = subIndustryId
+      ? await prisma.$queryRaw<{ id: string; file: string }[]>`
+          SELECT id, file FROM "Image"
+          WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
+          ORDER BY RANDOM()
+          LIMIT 7
+        `
+      : []
+
+    for (let i = 0; i < dbImages.length; i++) {
+      await this.delay(DB_DELAY_MS)
+
+      const prompt = buildPostTextPrompt(
+        industryName,
+        subIndustryName,
+        `${userPrompt} (variation ${i + 1})`
+      )
+
+      const completion = await deepseek.chat.completions.create({
+        model: 'deepseek-chat',
+        messages: [{ role: 'user', content: prompt }],
+      })
+
+      const raw = completion.choices[0]?.message?.content?.trim() ?? ''
+      const { text, hashtags } = this.parseTextResult(raw)
+
+      onPost({
+        index: i,
+        post: {
+          image: { imageUrl: dbImages[i].file },
+          text,
+          hashtags,
+          source: 'DB',
+          index: i,
+        },
+      })
     }
   }
 
@@ -750,14 +755,15 @@ private async resolveBaseData(
 
 async generateTextStreamed(
   userPrompt: string,
-  onPost: (event: { index: number; text: string }) => void
+  onPost: (event: { text: string }) => void
 ): Promise<void> {
-  const variations = 5
-  for (let i = 0; i < variations; i++) {
-    const prompt = buildUserTextPrompt(`${userPrompt} (variation ${i + 1})`)
-    const text = await this.geminiService.generateText(prompt)
-    onPost({ index: i, text })
-  }
+  const prompt = buildUserTextPrompt(userPrompt)
+  const completion = await deepseek.chat.completions.create({
+    model: 'deepseek-chat',
+    messages: [{ role: 'user', content: prompt }],
+  })
+  const text = completion.choices[0]?.message?.content?.trim() ?? ''
+  onPost({ text })
 }
 
   

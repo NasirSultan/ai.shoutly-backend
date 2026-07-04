@@ -250,7 +250,7 @@ async getImagesBySubIndustry(subIndustryId?: string) {
           FROM "Image"
           WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
           ORDER BY RANDOM()
-          LIMIT 15
+          LIMIT 7
         `
       } else {
         images = await prisma.$queryRaw`
@@ -258,7 +258,7 @@ async getImagesBySubIndustry(subIndustryId?: string) {
           FROM "Image"
           WHERE "deletedAt" IS NULL
           ORDER BY RANDOM()
-          LIMIT 15
+          LIMIT 7
         `
       }
       await redis.set(cacheKey, JSON.stringify(images), { EX: cacheTTL })
