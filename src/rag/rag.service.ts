@@ -116,8 +116,12 @@ export class RagService {
     }
   }
 
+  private normalizeQuery(query: string): string {
+    return query.replace(/[-_/\\|]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
+  }
+
   async searchSimilar(query: string, topK = 5): Promise<RagDocumentWithScore[]> {
-    const embedding = await this.embedText(query)
+    const embedding = await this.embedText(this.normalizeQuery(query))
     const vectorStr = `[${embedding.join(',')}]`
     const limit = Math.max(1, Math.min(10, topK))
 
@@ -178,6 +182,7 @@ Respond with valid JSON only, exactly in this format:
       const completion = await deepseek.chat.completions.create({
         model: CHAT_MODEL,
         messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
       })
 
       const raw = (completion.choices[0]?.message?.content ?? '').trim()
@@ -221,6 +226,7 @@ Rules: Answer from context only. If insufficient, say so. Be concise.`
     const stream = await deepseek.chat.completions.create({
       model: CHAT_MODEL,
       messages: [{ role: 'user', content: prompt }],
+      temperature: 0,
       stream: true,
     })
 
