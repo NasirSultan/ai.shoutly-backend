@@ -238,16 +238,46 @@ Rules: Answer from context only. If insufficient, say so. Be concise.`
     yield `data: [DONE]\n\n`
   }
 
-  async listDocuments(): Promise<RagDocument[]> {
-    const rows = await this.prisma.$queryRawUnsafe<Array<RagDocument & { metadata: string }>>(
-      `SELECT id::text, title, content, metadata::text, created_at::text, updated_at::text
-       FROM rag_documents
-       ORDER BY created_at DESC`,
+  async listDocuments(opts: { page: number; limit: number; search?: string }) {
+    const { page, limit, search } = opts
+    const offset = (page - 1) * limit
+
+    const countRows = await this.prisma.$queryRawUnsafe<[{ count: string }]>(
+      search
+        ? `SELECT COUNT(*)::text AS count FROM rag_documents WHERE title ILIKE $1 OR content ILIKE $1`
+        : `SELECT COUNT(*)::text AS count FROM rag_documents`,
+      ...(search ? [`%${search}%`] : []),
     )
-    return rows.map((r) => ({
+    const total = parseInt(countRows[0].count)
+
+    const rows = await this.prisma.$queryRawUnsafe<Array<RagDocument & { metadata: string }>>(
+      search
+        ? `SELECT id::text, title, content, metadata::text, created_at::text, updated_at::text
+           FROM rag_documents
+           WHERE title ILIKE $1 OR content ILIKE $1
+           ORDER BY created_at DESC
+           LIMIT $2 OFFSET $3`
+        : `SELECT id::text, title, content, metadata::text, created_at::text, updated_at::text
+           FROM rag_documents
+           ORDER BY created_at DESC
+           LIMIT $1 OFFSET $2`,
+      ...(search ? [`%${search}%`, limit, offset] : [limit, offset]),
+    )
+
+    const data = rows.map((r) => ({
       ...r,
       metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata,
     }))
+
+    return {
+      data,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    }
   }
 
   async deleteDocument(id: string): Promise<{ message: string }> {

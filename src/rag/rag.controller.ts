@@ -5,6 +5,7 @@ import {
   Delete,
   Body,
   Param,
+  Query,
   Res,
   HttpCode,
   HttpStatus,
@@ -43,11 +44,20 @@ export class RagController {
 
   /**
    * GET /rag/documents
-   * List all indexed documents (without embeddings).
+   * List all indexed documents with pagination and optional search.
+   * Query params: page (default 1), limit (default 10), search (optional keyword)
    */
   @Get('documents')
-  listDocuments() {
-    return this.ragService.listDocuments()
+  listDocuments(
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+    @Query('search') search?: string,
+  ) {
+    return this.ragService.listDocuments({
+      page: Math.max(1, parseInt(page) || 1),
+      limit: Math.min(100, Math.max(1, parseInt(limit) || 10)),
+      search: search?.trim() || undefined,
+    })
   }
 
   /**
