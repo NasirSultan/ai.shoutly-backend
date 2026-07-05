@@ -280,6 +280,38 @@ Rules: Answer from context only. If insufficient, say so. Be concise.`
     }
   }
 
+  async updateDocument(id: string, dto: { title?: string; content?: string; metadata?: Record<string, any> }) {
+    const existing = await this.prisma.$queryRawUnsafe<Array<{ id: string; title: string; content: string; metadata: string }>>(
+      `SELECT id::text, title, content, metadata::text FROM rag_documents WHERE id = $1::uuid`,
+      id,
+    )
+    if (!existing || existing.length === 0) throw new NotFoundException(`Document ${id} not found`)
+
+    const current = existing[0]
+    const newTitle = dto.title ?? current.title
+    const newContent = dto.content ?? current.content
+    const newMetadata = dto.metadata ?? (typeof current.metadata === 'string' ? JSON.parse(current.metadata) : current.metadata)
+
+    const embedding = await this.embedText(newContent)
+    const vectorStr = `[${embedding.join(',')}]`
+
+    const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
+      `UPDATE rag_documents
+       SET title = $1, content = $2, metadata = $3::jsonb, embedding = $4::vector, updated_at = now()
+       WHERE id = $5::uuid
+       RETURNING id`,
+      newTitle,
+      newContent,
+      JSON.stringify(newMetadata),
+      vectorStr,
+      id,
+    )
+
+    if (!rows || rows.length === 0) throw new NotFoundException(`Document ${id} not found`)
+
+    return { success: true, id, title: newTitle, message: 'Document updated and embedding refreshed' }
+  }
+
   async deleteDocument(id: string): Promise<{ message: string }> {
     const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
       `DELETE FROM rag_documents WHERE id = $1::uuid RETURNING id`,

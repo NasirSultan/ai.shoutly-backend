@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Delete,
+  Patch,
   Body,
   Param,
   Query,
@@ -16,6 +17,7 @@ import { RagService } from './rag.service'
 import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
 import { ChatQueryDto } from './dto/chat-query.dto'
+import { UpdateDocumentDto } from './dto/update-document.dto'
 
 @Controller('rag')
 export class RagController {
@@ -58,6 +60,15 @@ export class RagController {
       limit: Math.min(100, Math.max(1, parseInt(limit) || 10)),
       search: search?.trim() || undefined,
     })
+  }
+
+  /**
+   * PATCH /rag/documents/:id
+   * Update title, content, and/or metadata — re-generates embedding automatically.
+   */
+  @Patch('documents/:id')
+  updateDocument(@Param('id') id: string, @Body(ValidationPipe) dto: UpdateDocumentDto) {
+    return this.ragService.updateDocument(id, dto)
   }
 
   /**
