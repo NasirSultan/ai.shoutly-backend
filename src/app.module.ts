@@ -15,6 +15,7 @@ import { FacebookModule } from './social-media/facebook/facebook.module';
 import { JobsModule } from './jobs/jobs.module'
 import {AutopostModule} from './outstand/autopost.module'
 import { RagModule } from './rag/rag.module'
+import { ContactModule } from './contact/contact.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -29,6 +30,7 @@ import { RagModule } from './rag/rag.module'
   JobsModule,
   AutopostModule,
   RagModule,
+  ContactModule,
 ],
   controllers: [AppController],
   providers: [AppService],

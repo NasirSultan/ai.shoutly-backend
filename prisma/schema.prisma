@@ -346,6 +346,22 @@ model PostDelivery {
   @@index([outstandPostId])
 }
 
+enum ContactStatus {
+  PENDING
+  DONE
+}
+
+model ContactForm {
+  id        String        @id @default(uuid())
+  name      String
+  email     String
+  phone     String
+  query     String
+  status    ContactStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
 model RagDocument {
   id        String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   title     String
