@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-const LIMIT = 10
+const LIMIT = 9
 const MAX_TOTAL = 60
 
 interface PostRow {
