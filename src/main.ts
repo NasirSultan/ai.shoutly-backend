@@ -1,11 +1,14 @@
 import { NestFactory } from '@nestjs/core'
+import { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
+import * as path from 'path'
 import dotenv from 'dotenv'
 dotenv.config()
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule)
-    app.setGlobalPrefix('api')
+  const app = await NestFactory.create<NestExpressApplication>(AppModule)
+  app.useStaticAssets(path.join(__dirname, '..', 'public'))
+  app.setGlobalPrefix('api')
 
   app.enableCors({
     origin: '*',
