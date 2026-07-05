@@ -231,40 +231,26 @@ async deleteAllImages() {
 }
 
 async getImagesBySubIndustry(subIndustryId?: string) {
-    const redis = this.redisService.getClient()
-    const cacheKey = subIndustryId ? `subIndustry:${subIndustryId}:images` : 'allImages'
-    const cacheTTL = 3600
+    if (subIndustryId) {
+      const validSubIndustry = await prisma.subIndustry.findUnique({ where: { id: subIndustryId } })
+      if (!validSubIndustry) throw new BadRequestException('Invalid subIndustryId')
 
-    let images: { id: string; file: string; subIndustryId: string }[] = []
-    const cached = await redis.get(cacheKey)
-
-    if (cached) {
-      images = JSON.parse(cached)
-    } else {
-      if (subIndustryId) {
-        const validSubIndustry = await prisma.subIndustry.findUnique({ where: { id: subIndustryId } })
-        if (!validSubIndustry) throw new BadRequestException('Invalid subIndustryId')
-
-        images = await prisma.$queryRaw`
-          SELECT id, file, "subIndustryId"
-          FROM "Image"
-          WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
-          ORDER BY RANDOM()
-          LIMIT 7
-        `
-      } else {
-        images = await prisma.$queryRaw`
-          SELECT id, file, "subIndustryId"
-          FROM "Image"
-          WHERE "deletedAt" IS NULL
-          ORDER BY RANDOM()
-          LIMIT 7
-        `
-      }
-      await redis.set(cacheKey, JSON.stringify(images), { EX: cacheTTL })
+      return prisma.$queryRaw`
+        SELECT id, file, "subIndustryId"
+        FROM "Image"
+        WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
+        ORDER BY RANDOM()
+        LIMIT 7
+      `
     }
 
-    return images
+    return prisma.$queryRaw`
+      SELECT id, file, "subIndustryId"
+      FROM "Image"
+      WHERE "deletedAt" IS NULL
+      ORDER BY RANDOM()
+      LIMIT 7
+    `
   }
 
 
