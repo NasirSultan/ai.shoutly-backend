@@ -1,14 +1,14 @@
 import { Injectable, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
 import { CreateLogoDto } from './dto/create-logo.dto';
 import { UpdateLogoDto } from './dto/update-logo.dto';
 import axios from 'axios';
 import FormData from 'form-data';
 import { Express } from 'express';
+import { prisma } from '../../lib/prisma';
 
 @Injectable()
 export class LogoService {
-  private prisma = new PrismaClient();
+  private prisma = prisma;
   private imgbbKey = process.env.IMGBB_KEY;
 
   private async uploadToImgbb(file: Express.Multer.File): Promise<string> {

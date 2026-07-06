@@ -291,14 +291,12 @@
 // geminiimage.service.ts
 
 import { Injectable, InternalServerErrorException } from '@nestjs/common'
-import { PrismaClient } from '@prisma/client'
 import { GeminiService } from '../lib/llm/geminillm/gemini.service'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { buildPostImagePrompt,buildUserTextPrompt, buildPostTextPrompt } from '../lib/prompt/post.prompt'
 import { Express } from 'express'
 import OpenAI from 'openai'
-
-const prisma = new PrismaClient()
+import { prisma } from '../lib/prisma'
 
 const deepseek = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,

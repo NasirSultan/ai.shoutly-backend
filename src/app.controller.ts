@@ -1,11 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
 import { AppService } from './app.service';
-import { PrismaClient } from '@prisma/client'; // Import the base client
+import { prisma } from './lib/prisma';
 
 @Controller()
 export class AppController {
-  // Manual instantiation to match your other services
-  private prisma = new PrismaClient(); 
+  private prisma = prisma;
 
   constructor(
     private readonly appService: AppService,

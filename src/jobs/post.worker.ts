@@ -121,13 +121,11 @@
 
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { Worker, Job } from 'bullmq'
-import { PrismaClient } from '@prisma/client'
 import { RedisService } from '../common/redis/redis.service'
 import { BrevoService } from '../brevo/brevo.service'
 import { DateTime } from 'luxon'
 import axios from 'axios'
-
-const prisma = new PrismaClient()
+import { prisma } from '../lib/prisma'
 
 interface PublishJobData {
   calendarPostId: string

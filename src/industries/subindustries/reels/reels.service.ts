@@ -1,11 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common'
-import { PrismaClient } from '@prisma/client'
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { v4 as uuidv4 } from 'uuid'
 import * as path from 'path'
 import { Express } from 'express'
-
-const prisma = new PrismaClient()
+import { prisma } from '../../../lib/prisma'
 
 @Injectable()
 export class ReelsService {

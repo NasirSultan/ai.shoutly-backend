@@ -1,8 +1,8 @@
 import { Injectable,InternalServerErrorException ,NotFoundException} from '@nestjs/common'
-import { PrismaClient, CalendarPost, Subscription } from '@prisma/client'
+import { CalendarPost, Subscription } from '@prisma/client'
 import { generatePostsForMonth } from './generators/calendar.generator'
 import { DateTime } from 'luxon'
-const prisma = new PrismaClient()
+import { prisma } from '../lib/prisma'
 
 @Injectable()
 export class CalendarService {

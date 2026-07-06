@@ -1,9 +1,7 @@
-import { Injectable, OnModuleInit } from '@nestjs/common'  // ← Add OnModuleInit
+import { Injectable, OnModuleInit } from '@nestjs/common'
 import { Cron, CronExpression } from '@nestjs/schedule'
-import { PrismaClient } from '@prisma/client'
 import { PostQueue } from './post.queue'
-
-const prisma = new PrismaClient()
+import { prisma } from '../lib/prisma'
 const BATCH_SIZE = 10
 
 @Injectable()

@@ -1,10 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
 import axios from 'axios';
 import { CreatePostDto ,DirectPostDto} from './dto/post.dto';
 import { DateTime } from 'luxon'
 import { BrevoService } from 'src/brevo/brevo.service'
-const prisma = new PrismaClient();
+import { prisma } from '../../lib/prisma';
 
 
 @Injectable()

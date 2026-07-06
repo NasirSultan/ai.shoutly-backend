@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common'
-import { PrismaClient } from '@prisma/client'
+import { prisma } from '../../lib/prisma'
 
 @Injectable()
 export class SubindustriesService {
-  private prisma = new PrismaClient()
+  private prisma = prisma
 
   async createSubindustries(industryId: string, names: string[]) {
     const data = names.map(n => ({

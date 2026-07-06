@@ -1,14 +1,12 @@
 import { Injectable,InternalServerErrorException,NotFoundException,BadRequestException  } from '@nestjs/common'
-import { PrismaClient } from '@prisma/client'
 import axios from 'axios'
 import FormData from 'form-data'
 import * as dotenv from 'dotenv'
 import { Express } from 'express'
 import { RedisService } from '../../common/redis/redis.service'
 import { createHash } from 'crypto'
+import { prisma } from '../../lib/prisma'
 dotenv.config()
-
-const prisma = new PrismaClient()
 const imgbbKey = process.env.IMGBB_KEY
 
 type ImgbbUploadResult = {

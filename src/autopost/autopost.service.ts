@@ -1,13 +1,14 @@
 import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
-import { PrismaClient, SocialPlatform, PostStatusBridge, DeliveryStatus } from '@prisma/client';
+import { SocialPlatform, PostStatusBridge, DeliveryStatus } from '@prisma/client';
 import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
 import { SchedulePostDto } from './dto/schedule-post.dto';
 import axios from 'axios';
+import { prisma } from '../lib/prisma';
 
 @Injectable()
 export class AutopostService {
-  private prisma = new PrismaClient();
+  private prisma = prisma;
   private readonly outstandApiKey = process.env.OUTSTAND_API_KEY!;
   private readonly outstandBaseUrl = process.env.OUTSTAND_BASE_URL!;
   private readonly outstandRedirectUri = process.env.OUTSTAND_REDIRECT_URI!;

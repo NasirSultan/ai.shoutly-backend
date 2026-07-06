@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { prisma as _prisma } from '../lib/prisma';
 const ImageKit = require('imagekit');
 import fetch from 'node-fetch';
 import sharp from 'sharp';
@@ -28,11 +28,10 @@ interface LogoData {
 
 @Injectable()
 export class ImagelayoutService {
-  private prisma: PrismaClient;
+  private prisma = _prisma;
   private imagekit: any;
 
   constructor() {
-    this.prisma = new PrismaClient();
     if (process.env.IMAGEKIT_PUBLIC_KEY && process.env.IMAGEKIT_PRIVATE_KEY && process.env.IMAGEKIT_URL_ENDPOINT) {
       this.imagekit = new ImageKit({
         publicKey: process.env.IMAGEKIT_PUBLIC_KEY,

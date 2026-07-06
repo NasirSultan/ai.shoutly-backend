@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaClient, Content } from '@prisma/client';
+import { Content } from '@prisma/client';
 import { CreateContentDto } from './dto/create-content.dto';
+import { prisma } from '../../../lib/prisma';
 
 @Injectable()
 export class ContentService {
-  private prisma = new PrismaClient();
+  private prisma = prisma;
 
 async createMultipleContents(subIndustryId: string, posts: CreateContentDto[]): Promise<Content[]> {
   return this.prisma.$transaction(

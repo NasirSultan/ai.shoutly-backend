@@ -1,14 +1,14 @@
 import { Injectable,InternalServerErrorException } from '@nestjs/common'
-import { PrismaClient } from '@prisma/client'
 import { RedisService } from '../common/redis/redis.service'
 import { promisify } from 'util'
 import * as zlib from 'zlib'
+import { prisma } from '../lib/prisma'
 
 const gzip = promisify(zlib.gzip)
 const gunzip = promisify(zlib.gunzip)
 @Injectable()
 export class IndustriesService {
-  private prisma = new PrismaClient()
+  private prisma = prisma
    constructor(private redisService: RedisService) {}
 
   async createIndustry(name: string) {

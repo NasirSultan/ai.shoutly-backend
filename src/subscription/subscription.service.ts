@@ -1,9 +1,7 @@
 import { Injectable } from "@nestjs/common";
-import { PrismaClient } from "@prisma/client";
 import {  PlanPrices, Plan, Billing } from "./subscription.constants";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
-
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma";
 
 @Injectable()
 export class SubscriptionService {

@@ -1,9 +1,8 @@
 import { Injectable, NotFoundException } from '@nestjs/common'
-import { PrismaClient, FestivalType } from '@prisma/client'
+import { FestivalType } from '@prisma/client'
 import { CreateFestivalDto } from './dto/create-festival.dto'
 import { UpdateFestivalDto } from './dto/update-festival.dto'
-
-const prisma = new PrismaClient()
+import { prisma } from '../lib/prisma'
 
 @Injectable()
 export class FestivalsService {

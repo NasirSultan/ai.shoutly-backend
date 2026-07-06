@@ -1,14 +1,14 @@
 import { Injectable, NotFoundException, BadRequestException,InternalServerErrorException } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ImgbbService } from '../lib/imgbb/imgbb.service';
 import { Express } from 'express';
 import { UpdatePasswordDto } from './dto/update-password.dto';
 import * as bcrypt from 'bcrypt';
+import { prisma } from '../lib/prisma';
 @Injectable()
 export class UserService {
-  private prisma = new PrismaClient();
+  private prisma = prisma;
 
   constructor(private readonly imgbbService: ImgbbService) {}
 
