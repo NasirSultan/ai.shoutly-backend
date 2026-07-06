@@ -5,6 +5,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { v4 as uuidv4 } from 'uuid'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const sharp = require('sharp') as typeof import('sharp')
+sharp.cache(false) // disable sharp's internal cache to prevent memory buildup
 
 @Injectable()
 export class DriveImportService {
@@ -112,7 +113,7 @@ export class DriveImportService {
       imported++
     }
 
-    const CONCURRENCY = 5
+    const CONCURRENCY = 1
     const queue = [...files]
     const workers = Array.from({ length: CONCURRENCY }, async () => {
       while (queue.length) {
@@ -184,7 +185,7 @@ export class DriveImportService {
 
     // Worker pool: 5 concurrent workers pull from a shared queue.
     // Keeps DB connections within pgBouncer limits while maximising throughput.
-    const CONCURRENCY = 5
+    const CONCURRENCY = 1
     const queue = [...files]
     const workers = Array.from({ length: CONCURRENCY }, async () => {
       while (queue.length) {
