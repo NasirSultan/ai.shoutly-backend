@@ -5,6 +5,7 @@ import { PrismaService } from '../../../lib/prisma.service'
 
 @Module({
   controllers: [DriveImportController],
-  providers: [DriveImportService, PrismaService]
+  providers: [DriveImportService, PrismaService],
+  exports: [DriveImportService],
 })
 export class DriveImportModule {}

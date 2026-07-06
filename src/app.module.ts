@@ -17,6 +17,7 @@ import {AutopostModule} from './outstand/autopost.module'
 import { RagModule } from './rag/rag.module'
 import { ContactModule } from './contact/contact.module'
 import { PostsModule } from './posts/posts.module'
+import { FestivalsModule } from './festivals/festivals.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -33,6 +34,7 @@ import { PostsModule } from './posts/posts.module'
   RagModule,
   ContactModule,
   PostsModule,
+  FestivalsModule,
 ],
   controllers: [AppController],
   providers: [AppService],

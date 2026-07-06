@@ -80,6 +80,61 @@ export class DriveImportService {
     return this.getS3Url(key)
   }
 
+  async importForFestival(festivalId: string, folderId: string) {
+    const festival = await this.prisma.festival.findUnique({ where: { id: festivalId } })
+    if (!festival) return { success: false, message: 'Festival not found' }
+
+    const drive = this.getDriveClient()
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType contains 'image/' and trashed=false`,
+      fields: 'files(id, name, mimeType)',
+    })
+
+    const files = res.data.files || []
+    this.logger.log(`Festival import: found ${files.length} file(s)`)
+
+    let imported = 0, skipped = 0, failed = 0
+
+    const processFile = async (file: any) => {
+      const fileId = file.id!
+      const driveUrl = `https://drive.google.com/uc?export=view&id=${fileId}`
+
+      const exists = await this.prisma.festivalImage.findFirst({
+        where: { driveUrl, festivalId },
+      })
+      if (exists) { skipped++; return }
+
+      const s3Url = await this.uploadDriveFileToS3(drive, fileId)
+      await this.prisma.festivalImage.create({
+        data: { file: s3Url, driveUrl, festivalId },
+      })
+      this.logger.log(`✅ Festival image imported → ${s3Url}`)
+      imported++
+    }
+
+    const CONCURRENCY = 5
+    const queue = [...files]
+    const workers = Array.from({ length: CONCURRENCY }, async () => {
+      while (queue.length) {
+        const file = queue.shift()!
+        await processFile(file).catch((e: any) => {
+          this.logger.error(`❌ Failed ${file.name}: ${e.message}`)
+          failed++
+        })
+      }
+    })
+    await Promise.all(workers)
+
+    return {
+      success: true,
+      total: files.length,
+      imported,
+      skippedDuplicates: skipped,
+      failed,
+      message: `${imported} imported, ${skipped} skipped, ${failed} failed out of ${files.length} total.`,
+    }
+  }
+
   async importFromDrive(subIndustryId: string, folderId: string) {
     const drive = this.getDriveClient()
 

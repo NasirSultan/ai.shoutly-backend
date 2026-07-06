@@ -351,6 +351,13 @@ enum ContactStatus {
   DONE
 }
 
+enum FestivalType {
+  GLOBAL
+  SPECIAL_DAY
+  FESTIVAL
+  NATIONAL
+}
+
 model ContactForm {
   id        String        @id @default(uuid())
   name      String
@@ -360,6 +367,31 @@ model ContactForm {
   status    ContactStatus @default(PENDING)
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
+}
+
+model Festival {
+  id        String          @id @default(uuid())
+  date      DateTime
+  event     String
+  type      FestivalType
+  images    FestivalImage[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@index([date])
+  @@index([type])
+}
+
+model FestivalImage {
+  id         String   @id @default(uuid())
+  file       String
+  driveUrl   String?
+  festival   Festival @relation(fields: [festivalId], references: [id], onDelete: Cascade)
+  festivalId String
+  createdAt  DateTime @default(now())
+  deletedAt  DateTime?
+
+  @@index([festivalId])
 }
 
 model RagDocument {
