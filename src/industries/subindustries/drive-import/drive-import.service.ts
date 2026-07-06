@@ -67,8 +67,9 @@ export class DriveImportService {
       { responseType: 'arraybuffer' }
     )
 
-    const rawBuffer = Buffer.from(response.data as ArrayBuffer)
+    let rawBuffer: Buffer | null = Buffer.from(response.data as ArrayBuffer)
     const compressed = await this.compressImage(rawBuffer)
+    rawBuffer = null // free raw buffer immediately after compression
 
     await this.s3.send(new PutObjectCommand({
       Bucket: this.bucketName,
@@ -77,6 +78,9 @@ export class DriveImportService {
       ContentType: 'image/jpeg',
       ACL: 'public-read'
     }))
+
+    // yield to event loop so GC can reclaim memory before next image
+    await new Promise((r) => setImmediate(r))
 
     return this.getS3Url(key)
   }
