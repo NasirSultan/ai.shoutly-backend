@@ -5,7 +5,8 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { v4 as uuidv4 } from 'uuid'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const sharp = require('sharp') as typeof import('sharp')
-sharp.cache(false) // disable sharp's internal cache to prevent memory buildup
+sharp.cache(false)
+sharp.concurrency(1) // single libvips thread — prevents native memory spikes
 
 @Injectable()
 export class DriveImportService {
@@ -46,14 +47,21 @@ export class DriveImportService {
   }
 
   private async compressImage(buffer: Buffer): Promise<Buffer> {
-    const TARGET_SIZE = 900 * 1024 // 900KB — safely under 1MB
+    const TARGET_SIZE = 900 * 1024
     let quality = 85
 
-    let compressed = await sharp(buffer).jpeg({ quality, mozjpeg: true }).toBuffer()
+    // Resize to max 1200px first — dramatically reduces libvips native memory
+    let compressed = await sharp(buffer)
+      .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality, mozjpeg: true })
+      .toBuffer()
 
     while (compressed.length > TARGET_SIZE && quality > 40) {
       quality -= 10
-      compressed = await sharp(buffer).jpeg({ quality, mozjpeg: true }).toBuffer()
+      compressed = await sharp(buffer)
+        .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality, mozjpeg: true })
+        .toBuffer()
     }
 
     return compressed

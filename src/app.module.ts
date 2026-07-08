@@ -18,6 +18,8 @@ import { RagModule } from './rag/rag.module'
 import { ContactModule } from './contact/contact.module'
 import { PostsModule } from './posts/posts.module'
 import { FestivalsModule } from './festivals/festivals.module'
+import { NotesModule } from './notes/notes.module'
+import { DashboardModule } from './dashboard/dashboard.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -35,6 +37,8 @@ import { FestivalsModule } from './festivals/festivals.module'
   ContactModule,
   PostsModule,
   FestivalsModule,
+  NotesModule,
+  DashboardModule,
 ],
   controllers: [AppController],
   providers: [AppService],
