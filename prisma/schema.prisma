@@ -97,6 +97,11 @@ enum Billing {
   YEARLY
 }
 
+enum Currency {
+  INR
+  USD
+}
+
 enum PostType {
   REEL
   IMAGE
@@ -240,6 +245,8 @@ model Subscription {
   userId    String
   plan      Plan?
   billing   Billing?
+  amount    Float?
+  currency  Currency?
   isTrial   Boolean   @default(false)
   startedAt DateTime  @default(now())
   expiresAt DateTime?

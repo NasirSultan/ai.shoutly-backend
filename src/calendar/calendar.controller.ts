@@ -15,17 +15,11 @@ export class CalendarController {
   @Post('plan')
   async createMonthlyPlan(
     @Req() req,
-    @Body() body: { prompt: string; subIndustries: string[]; postTime: string }
+    @Body() body: { postTime: string }
   ) {
     const userId = req.user.id
-    const { prompt, subIndustries, postTime } = body
 
-    return await this.calendarService.generatePlan(
-      userId,
-      prompt,
-      subIndustries,
-      postTime
-    )
+    return await this.calendarService.generatePlan(userId, body.postTime)
   }
 
 // calendar.controller.ts

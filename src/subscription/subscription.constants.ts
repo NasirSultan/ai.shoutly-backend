@@ -1,6 +1,5 @@
 export enum Plan {
-  STARTER = "STARTER",
-  GROWTH = "GROWTH",
+  FULL_POWER = "GROWTH",
 }
 
 export enum Billing {
@@ -8,13 +7,19 @@ export enum Billing {
   YEARLY = "YEARLY",
 }
 
-export const PlanPrices: Record<Plan, Record<Billing, number>> = {
-  [Plan.STARTER]: {
-    [Billing.MONTHLY]: 11,
-    [Billing.YEARLY]: 100,
+export enum Currency {
+  INR = "INR",
+  USD = "USD",
+}
+
+// Amount charged per billing cycle (monthly = charged every month, yearly = charged once for the year)
+export const PlanPrices: Record<Currency, Record<Billing, number>> = {
+  [Currency.INR]: {
+    [Billing.MONTHLY]: 10000,
+    [Billing.YEARLY]: 96000,
   },
-  [Plan.GROWTH]: {
-    [Billing.MONTHLY]: 18,
-    [Billing.YEARLY]: 170,
+  [Currency.USD]: {
+    [Billing.MONTHLY]: 119,
+    [Billing.YEARLY]: 1143,
   },
 };

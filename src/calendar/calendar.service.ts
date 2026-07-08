@@ -1,5 +1,5 @@
 import { Injectable,InternalServerErrorException ,NotFoundException} from '@nestjs/common'
-import { CalendarPost, Subscription } from '@prisma/client'
+import { CalendarPost } from '@prisma/client'
 import { generatePostsForMonth } from './generators/calendar.generator'
 import { DateTime } from 'luxon'
 import { prisma } from '../lib/prisma'
@@ -29,46 +29,35 @@ export class CalendarService {
 
  async generatePlan(
     userId: string,
-    prompt: string,
-    subIndustryIds: string[],
     postTimeInput: string
   ) {
-   await prisma.subscription.updateMany({
-     where: { userId: userId },
-     data: {
-       isActive: true,
-       isTrial: false
-     }
+   const user = await prisma.user.findUnique({
+     where: { id: userId },
+     select: { subIndustryId: true, timezone: true }
    })
-   
+
+   if (!user?.subIndustryId) {
+     return {
+       success: false,
+       message: 'Please select an industry first.'
+     }
+   }
+
     const subscription = await prisma.subscription.findFirst({
-      where: { userId, isActive: true },
+      where: { userId, isActive: true, expiresAt: { gt: new Date() } },
     })
 
-    let trial: Subscription | null = null
     if (!subscription) {
-      trial = await prisma.subscription.findFirst({
-        where: { userId, isTrial: true },
-      })
-
-      if (trial) {
-        return {
-          success: false,
-          message: 'Free trial already used. Please buy a plan.',
-        }
-      }
-
-      if (!trial) {
-        trial = await prisma.subscription.create({
-          data: { userId, isTrial: true, isActive: false },
-        })
+      return {
+        success: false,
+        message: 'Payment required. Please subscribe to a plan to continue.',
       }
     }
 
-    const planType = subscription ? 'PAID' : 'FREE'
-    const totalDays = subscription ? 31 : 7
+    const planType = 'PAID'
+    const totalDays = 31
 
-    const userTz = await this.getUserTimezone(userId)
+    const userTz = user.timezone || 'UTC'
     const [hours, minutes] = postTimeInput.split(':').map(Number)
 
     // Build each day's postTime in user's timezone, then convert to UTC
@@ -90,7 +79,7 @@ export class CalendarService {
       prisma,
       userId,
       days,
-      subIndustryIds
+      [user.subIndustryId]
     )
 
     if (!generatedPosts.length) {

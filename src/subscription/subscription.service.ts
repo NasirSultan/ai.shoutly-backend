@@ -1,20 +1,18 @@
-import { Injectable } from "@nestjs/common";
-import {  PlanPrices, Plan, Billing } from "./subscription.constants";
+import { Injectable, BadRequestException } from "@nestjs/common";
+import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
 import { prisma } from "../lib/prisma";
 
 @Injectable()
 export class SubscriptionService {
-  async buySubscription(userId: string, dto: CreateSubscriptionDto, trial = false) {
-    const { plan, billing } = dto;
+  async buySubscription(userId: string, dto: CreateSubscriptionDto) {
+    const { billing, currency } = dto;
 
-    if (trial) {
-      const previousTrial = await prisma.subscription.findFirst({
-        where: { userId, isTrial: true },
-      });
-      if (previousTrial) {
-        throw new Error("User has already used the free trial");
-      }
+    if (!Object.values(Billing).includes(billing)) {
+      throw new BadRequestException(`Invalid billing cycle: ${billing}`);
+    }
+    if (!Object.values(Currency).includes(currency)) {
+      throw new BadRequestException(`Invalid currency: ${currency}`);
     }
 
     const activeSub = await prisma.subscription.findFirst({
@@ -28,27 +26,54 @@ export class SubscriptionService {
     }
 
     const now = new Date();
-    const expiresAt = trial
-      ? new Date(now.setDate(now.getDate() + 7))
-      : billing === Billing.MONTHLY
-      ? new Date(now.setMonth(now.getMonth() + 1))
-      : new Date(now.setFullYear(now.getFullYear() + 1));
+    const expiresAt =
+      billing === Billing.MONTHLY
+        ? new Date(now.setMonth(now.getMonth() + 1))
+        : new Date(now.setFullYear(now.getFullYear() + 1));
+
+    const amount = PlanPrices[currency][billing];
 
     const newSub = await prisma.subscription.create({
       data: {
         userId,
-        plan,
-        billing,
+        plan: Plan.FULL_POWER as any,
+        billing: billing as any,
+        currency: currency as any,
+        amount,
         startedAt: new Date(),
         expiresAt,
         isActive: true,
-        isTrial: trial,
+        isTrial: false,
       },
     });
 
-    const price = trial ? 0 : PlanPrices[plan][billing];
+    return { subscription: newSub, price: amount, currency };
+  }
 
-    return { subscription: newSub, price };
+  async getCurrentPlan(userId: string) {
+    const subscription = await prisma.subscription.findFirst({
+      where: { userId, isActive: true },
+    });
+
+    if (!subscription) {
+      return { hasActivePlan: false };
+    }
+
+    const now = Date.now();
+    const daysRemaining = subscription.expiresAt
+      ? Math.max(0, Math.ceil((subscription.expiresAt.getTime() - now) / (1000 * 60 * 60 * 24)))
+      : null;
+
+    return {
+      hasActivePlan: true,
+      isTrial: subscription.isTrial,
+      billing: subscription.billing,
+      currency: subscription.currency,
+      amount: subscription.amount,
+      startedAt: subscription.startedAt,
+      expiresAt: subscription.expiresAt,
+      daysRemaining,
+    };
   }
 
   async getSubscriptionHistory(userId: string) {
@@ -58,7 +83,7 @@ export class SubscriptionService {
     });
   }
 
-  getPrice(plan: Plan, billing: Billing) {
-    return PlanPrices[plan][billing];
+  getPrice(billing: Billing, currency: Currency) {
+    return PlanPrices[currency][billing];
   }
 }

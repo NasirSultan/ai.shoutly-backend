@@ -2,7 +2,6 @@ import { Controller, Post, Body, Get, Req, UseGuards } from "@nestjs/common";
 import { SubscriptionService } from "./subscription.service";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
 import { AuthGuard } from "../common/guards/auth.guard";
-import { Plan, Billing } from "./subscription.constants";
 
 @Controller("subscription")
 @UseGuards(AuthGuard)
@@ -15,11 +14,10 @@ export class SubscriptionController {
     return this.subscriptionService.buySubscription(userId, dto);
   }
 
-  @Post("trial")
-  async trial(@Req() req) {
+  @Get("current")
+  async current(@Req() req) {
     const userId = req.user.id;
-    const dto = { plan: Plan.STARTER, billing: Billing.MONTHLY };
-    return this.subscriptionService.buySubscription(userId, dto, true);
+    return this.subscriptionService.getCurrentPlan(userId);
   }
 
   @Get("history")

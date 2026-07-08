@@ -1,6 +1,10 @@
-import { Plan, Billing } from "../subscription.constants";
+import { IsEnum } from "class-validator";
+import { Billing, Currency } from "../subscription.constants";
 
 export class CreateSubscriptionDto {
-  plan: Plan;
+  @IsEnum(Billing)
   billing: Billing;
+
+  @IsEnum(Currency)
+  currency: Currency;
 }
