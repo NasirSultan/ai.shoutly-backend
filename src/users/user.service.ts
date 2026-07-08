@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException,InternalServerErrorException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException,InternalServerErrorException, ConflictException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ImgbbService } from '../lib/imgbb/imgbb.service';
@@ -24,6 +24,41 @@ export class UserService {
     const user = await this.prisma.user.findUnique({ where: { id }, include: { logo: true } });
     if (!user) throw new NotFoundException('User not found');
     return user;
+  }
+
+  async getIndustrySelection(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { industry: true, subIndustry: { include: { industry: true } } }
+    });
+    if (!user) throw new NotFoundException('User not found');
+
+    return { industry: user.industry, subIndustry: user.subIndustry };
+  }
+
+  async selectSubIndustry(userId: string, subIndustryId: string) {
+    const subIndustry = await this.prisma.subIndustry.findUnique({
+      where: { id: subIndustryId },
+      include: { industry: true }
+    });
+    if (!subIndustry) throw new NotFoundException('Sub-industry not found');
+
+    const claimedBy = await this.prisma.user.findUnique({ where: { subIndustryId } });
+    if (claimedBy && claimedBy.id !== userId) {
+      throw new ConflictException('This sub-industry is already assigned to another account');
+    }
+
+    const industryClaimedBy = await this.prisma.user.findUnique({ where: { industryId: subIndustry.industryId } });
+    if (industryClaimedBy && industryClaimedBy.id !== userId) {
+      throw new ConflictException('This industry is already assigned to another account');
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { subIndustryId: subIndustry.id, industryId: subIndustry.industryId }
+    });
+
+    return { industry: subIndustry.industry, subIndustry: { ...subIndustry, industry: undefined } };
   }
 
   async update(id: string, dto: UpdateUserDto) {

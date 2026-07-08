@@ -4,6 +4,7 @@ import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdatePasswordDto } from './dto/update-password.dto';
+import { SelectSubIndustryDto } from './dto/select-sub-industry.dto';
 import { Express } from 'express'
 import { AuthGuard } from '../common/guards/auth.guard';
 
@@ -34,6 +35,18 @@ export class UserController {
   updatePassword(@Req() req, @Body() dto: UpdatePasswordDto) {
     const userId = req.user.id;
     return this.userService.updatePassword(userId, dto);
+  }
+
+  @Get('me/industry-selection')
+  @UseGuards(AuthGuard)
+  getIndustrySelection(@Req() req) {
+    return this.userService.getIndustrySelection(req.user.id);
+  }
+
+  @Patch('me/industry-selection')
+  @UseGuards(AuthGuard)
+  selectSubIndustry(@Req() req, @Body() dto: SelectSubIndustryDto) {
+    return this.userService.selectSubIndustry(req.user.id, dto.subIndustryId);
   }
 
   @Get(':id')
