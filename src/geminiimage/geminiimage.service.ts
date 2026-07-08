@@ -354,12 +354,10 @@ export class PostGeneratorService {
     private readonly imgbbService: ImgbbService
   ) {}
 
-  async generateMixedPostsStreamed(
-    industryId: string | undefined,
+  async generateMixedPosts(
     subIndustryId: string | undefined,
-    userPrompt: string,
-    onPost: OnPost
-  ): Promise<void> {
+    userPrompt: string
+  ): Promise<{ success: boolean; message?: string; posts?: GeneratedPost[] }> {
     const subIndustryRecord = subIndustryId
       ? await prisma.subIndustry.findUnique({
           where: { id: subIndustryId },
@@ -379,34 +377,51 @@ export class PostGeneratorService {
         `
       : []
 
-    for (let i = 0; i < dbImages.length; i++) {
-      await this.delay(DB_DELAY_MS)
+    if (!dbImages.length) {
+      return { success: false, message: 'No images found for this sub-industry.' }
+    }
 
-      const prompt = buildPostTextPrompt(
-        industryName,
-        subIndustryName,
-        `${userPrompt} (variation ${i + 1})`
+    const posts: GeneratedPost[] = []
+    const batchSize = 2
+    const batchDelayMs = 1500
+
+    for (let i = 0; i < dbImages.length; i += batchSize) {
+      const batch = dbImages.slice(i, i + batchSize)
+
+      const completions = await Promise.all(
+        batch.map((_, j) =>
+          deepseek.chat.completions.create({
+            model: 'deepseek-chat',
+            messages: [{
+              role: 'user',
+              content: buildPostTextPrompt(
+                industryName,
+                subIndustryName,
+                `${userPrompt} (variation ${i + j + 1})`
+              ),
+            }],
+          })
+        )
       )
 
-      const completion = await deepseek.chat.completions.create({
-        model: 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-      })
-
-      const raw = completion.choices[0]?.message?.content?.trim() ?? ''
-      const { text, hashtags } = this.parseTextResult(raw)
-
-      onPost({
-        index: i,
-        post: {
-          image: { imageUrl: dbImages[i].file },
+      completions.forEach((completion, j) => {
+        const raw = completion.choices[0]?.message?.content?.trim() ?? ''
+        const { text, hashtags } = this.parseTextResult(raw)
+        posts.push({
+          index: i + j,
+          image: { imageUrl: batch[j].file },
           text,
           hashtags,
           source: 'DB',
-          index: i,
-        },
+        })
       })
+
+      if (i + batchSize < dbImages.length) {
+        await new Promise((res) => setTimeout(res, batchDelayMs))
+      }
     }
+
+    return { success: true, posts }
   }
 
   async generateMixedAndSavePostsStreamed(

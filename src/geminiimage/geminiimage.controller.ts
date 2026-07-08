@@ -11,25 +11,9 @@ export class PostGeneratorController {
   @Post('posts')
   async generate(
     @Body('subIndustryId') subIndustryId: string | undefined,
-    @Body('prompt') prompt: string,
-    @Res() res: Response
+    @Body('prompt') prompt: string
   ) {
-    res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.flushHeaders()
-
-    await this.postGeneratorService.generateMixedPostsStreamed(
-      undefined,
-      subIndustryId,
-      prompt,
-      (event: StreamEvent) => {
-        res.write(`data: ${JSON.stringify(event)}\n\n`)
-      }
-    )
-
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`)
-    res.end()
+    return this.postGeneratorService.generateMixedPosts(subIndustryId, prompt)
   }
 
   @Post('generate-and-save')
