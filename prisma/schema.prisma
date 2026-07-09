@@ -36,7 +36,7 @@ model User {
   subscriptions    Subscription[]
   connectedSocials SocialPlatform[] @default([])
   jobTitle         String?
-  industryId       String?          @unique
+  industryId       String?
   industry         Industry?        @relation(fields: [industryId], references: [id])
   subIndustryId    String?          @unique
   subIndustry      SubIndustry?     @relation(fields: [subIndustryId], references: [id])
@@ -147,7 +147,7 @@ model Industry {
   id            String        @id @default(uuid())
   name          String
   subIndustries SubIndustry[]
-  user          User?
+  users         User[]
 
   @@index([name])
 }

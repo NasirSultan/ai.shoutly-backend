@@ -48,11 +48,6 @@ export class UserService {
       throw new ConflictException('This sub-industry is already assigned to another account');
     }
 
-    const industryClaimedBy = await this.prisma.user.findUnique({ where: { industryId: subIndustry.industryId } });
-    if (industryClaimedBy && industryClaimedBy.id !== userId) {
-      throw new ConflictException('This industry is already assigned to another account');
-    }
-
     await this.prisma.user.update({
       where: { id: userId },
       data: { subIndustryId: subIndustry.id, industryId: subIndustry.industryId }
