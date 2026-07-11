@@ -36,6 +36,7 @@ export class DashboardService {
 
     const [
       user,
+      activeSubscription,
       connectionStatus,
       accountsOverview,
       trendMetrics,
@@ -59,8 +60,14 @@ export class DashboardService {
           phone: true,
           industryId: true,
           subIndustryId: true,
-          logo: { select: { id: true } }
+          logo: { select: { id: true } },
+          industry: { select: { id: true, name: true } },
+          subIndustry: { select: { id: true, name: true } }
         }
+      }),
+      prisma.subscription.findFirst({
+        where: { userId, isActive: true, expiresAt: { gt: now } },
+        orderBy: { createdAt: 'desc' }
       }),
       this.autopostService.getConnectionStatus(userId),
       this.autopostService.getAccountsOverviewAnalytics(userId),
@@ -100,6 +107,16 @@ export class DashboardService {
         name: user?.name || null,
         date: now.toISOString(),
         nextPostAt: nextScheduledPost?.postTime || null
+      },
+      subIndustrySelected: {
+        selected: !!user?.subIndustryId,
+        id: user?.subIndustryId || null,
+        name: user?.subIndustry?.name || null,
+        industry: user?.industry ? { id: user.industry.id, name: user.industry.name } : null
+      },
+      subscription: {
+        plan: activeSubscription?.billing || 'FREE',
+        isPurchased: !!activeSubscription
       },
       insight: this.buildInsight(trendMetrics),
       autopilot: {

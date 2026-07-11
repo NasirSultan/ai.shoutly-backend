@@ -138,8 +138,8 @@ async login(email: string, password: string) {
   await client.del(key)
 
   const payload = { sub: user.id, email: user.email, role: user.role }
-  const accessToken = this.jwtService.sign(payload, { expiresIn: 15 * 60 })
-  const refreshToken = this.jwtService.sign(payload, { expiresIn: 7 * 24 * 60 * 60 })
+  const accessToken = this.jwtService.sign(payload, { expiresIn: 7 * 24 * 60 * 60 })
+  const refreshToken = this.jwtService.sign(payload, { expiresIn: 30 * 24 * 60 * 60 })
 
   await this.prisma.user.update({
     where: { id: user.id },
@@ -165,8 +165,8 @@ async refreshToken(token: string) {
 
   const newPayload = { sub: user.id, email: user.email, role: user.role }
 
-  const accessTokenExpires = 15 * 60
-  const refreshTokenExpires = 7 * 24 * 60 * 60
+  const accessTokenExpires = 7 * 24 * 60 * 60
+  const refreshTokenExpires = 30 * 24 * 60 * 60
 
   const accessToken = this.jwtService.sign(newPayload, { expiresIn: accessTokenExpires })
   const refreshToken = this.jwtService.sign(newPayload, { expiresIn: refreshTokenExpires })
