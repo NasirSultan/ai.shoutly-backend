@@ -151,20 +151,21 @@ export class CalendarService {
     try {
       await prisma.calendarPost.createMany({ data: rows })
 
-      // Safety net: if this ran concurrently with another call for the same user,
-      // a day could end up with more than one post — auto-remove the extras.
-      await this.dedupePostsPerDay(userId)
-
-      // Re-fetch with relations so the response matches GET /calendar/plan's shape
-      const postsWithRelations = await prisma.calendarPost.findMany({
-        where: { id: { in: rows.map(r => r.id) } },
-        orderBy: { postTime: 'asc' },
-        include: {
-          content: { include: { hashtags: { include: { hashtag: true } } } },
-          reel: true,
-          image: true,
-        },
-      })
+      // Dedupe (safety net for a concurrent second call) and the relation re-fetch
+      // don't depend on each other's result, so they run together.
+      const [, postsWithRelations] = await Promise.all([
+        this.dedupePostsPerDay(userId),
+        // Re-fetch with relations so the response matches GET /calendar/plan's shape
+        prisma.calendarPost.findMany({
+          where: { id: { in: rows.map(r => r.id) } },
+          orderBy: { postTime: 'asc' },
+          include: {
+            content: { include: { hashtags: { include: { hashtag: true } } } },
+            reel: true,
+            image: true,
+          },
+        }),
+      ])
 
       return {
         success: true,
