@@ -38,7 +38,7 @@ model User {
   jobTitle         String?
   industryId       String?
   industry         Industry?        @relation(fields: [industryId], references: [id])
-  subIndustryId    String?          @unique
+  subIndustryId    String?
   subIndustry      SubIndustry?     @relation(fields: [subIndustryId], references: [id])
   timezone         String?
   language         String?
@@ -160,7 +160,7 @@ model SubIndustry {
   images        Image[]
   reels         Reel[]
   contents      Content[]
-  user          User?
+  users         User[]
   calendarPosts CalendarPost[]
 
   @@index([industryId])

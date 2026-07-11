@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException,InternalServerErrorException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException,InternalServerErrorException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { ImgbbService } from '../lib/imgbb/imgbb.service';
@@ -42,11 +42,6 @@ export class UserService {
       include: { industry: true }
     });
     if (!subIndustry) throw new NotFoundException('Sub-industry not found');
-
-    const claimedBy = await this.prisma.user.findUnique({ where: { subIndustryId } });
-    if (claimedBy && claimedBy.id !== userId) {
-      throw new ConflictException('This sub-industry is already assigned to another account');
-    }
 
     await this.prisma.user.update({
       where: { id: userId },
