@@ -27,6 +27,23 @@ export class CalendarService {
     return user?.timezone || 'UTC'
   }
 
+  // Keeps the earliest-created post per calendar day for this user and deletes any
+  // extras — guards against duplicate posts if generatePlan runs twice concurrently.
+  private async dedupePostsPerDay(userId: string): Promise<void> {
+    await prisma.$executeRaw`
+      DELETE FROM "CalendarPost" cp
+      USING (
+        SELECT id, ROW_NUMBER() OVER (
+          PARTITION BY "userId", date_trunc('day', "postTime")
+          ORDER BY "createdAt" ASC
+        ) AS rn
+        FROM "CalendarPost"
+        WHERE "userId" = ${userId}
+      ) ranked
+      WHERE cp.id = ranked.id AND ranked.rn > 1
+    `
+  }
+
  async generatePlan(
     userId: string,
     postTimeInput: string
@@ -71,8 +88,9 @@ export class CalendarService {
       return localDay
     })
 
+    // Only clear posts still in the future — preserve anything before now (already posted/handled)
     await prisma.calendarPost.deleteMany({
-      where: { userId },
+      where: { userId, postTime: { gte: new Date() } },
     })
 
     const generatedPosts = await generatePostsForMonth(
@@ -108,6 +126,10 @@ export class CalendarService {
 
     try {
       savedPosts = await prisma.$transaction(operations)
+
+      // Safety net: if this ran concurrently with another call for the same user,
+      // a day could end up with more than one post — auto-remove the extras.
+      await this.dedupePostsPerDay(userId)
 
       return {
         success: true,
