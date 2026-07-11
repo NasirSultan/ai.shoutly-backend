@@ -27,15 +27,16 @@ export class CalendarService {
     return user?.timezone || 'UTC'
   }
 
-  // Keeps the earliest-created post per calendar day for this user and deletes any
-  // extras — guards against duplicate posts if generatePlan runs twice concurrently.
+  // Keeps the most-recently-created post per calendar day for this user and deletes
+  // any extras — guards against duplicate posts if generatePlan runs twice concurrently,
+  // and against stale leftovers surviving alongside a freshly regenerated day.
   private async dedupePostsPerDay(userId: string): Promise<void> {
     await prisma.$executeRaw`
       DELETE FROM "CalendarPost" cp
       USING (
         SELECT id, ROW_NUMBER() OVER (
           PARTITION BY "userId", date_trunc('day', "postTime")
-          ORDER BY "createdAt" ASC
+          ORDER BY "createdAt" DESC
         ) AS rn
         FROM "CalendarPost"
         WHERE "userId" = ${userId}
@@ -88,9 +89,12 @@ export class CalendarService {
       return localDay
     })
 
-    // Only clear posts still in the future — preserve anything before now (already posted/handled)
+    // Clear today onward — preserve only yesterday and earlier (already posted/handled).
+    // Using the exact current instant here (instead of start-of-day) would leave today's
+    // already-passed post un-deleted while still generating a fresh post for today too.
+    const todayStart = DateTime.now().setZone(userTz).startOf('day').toUTC().toJSDate()
     await prisma.calendarPost.deleteMany({
-      where: { userId, postTime: { gte: new Date() } },
+      where: { userId, postTime: { gte: todayStart } },
     })
 
     const generatedPosts = await generatePostsForMonth(
