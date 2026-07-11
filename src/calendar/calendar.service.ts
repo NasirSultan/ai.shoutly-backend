@@ -1,7 +1,7 @@
 import { Injectable,InternalServerErrorException ,NotFoundException} from '@nestjs/common'
-import { CalendarPost } from '@prisma/client'
 import { generatePostsForMonth } from './generators/calendar.generator'
 import { DateTime } from 'luxon'
+import { randomUUID } from 'crypto'
 import { prisma } from '../lib/prisma'
 
 @Injectable()
@@ -17,6 +17,30 @@ export class CalendarService {
       .set({ hour: hours, minute: minutes, second: 0, millisecond: 0 })
       .toUTC()
       .toJSDate()
+  }
+
+  // Shared shape used by GET /calendar/plan, GET /calendar/post/:id, and now
+  // POST /calendar/plan too, so all three return posts in the same clear format.
+  private formatPost(post: any) {
+    return {
+      postId: post.id,
+      postTime: post.postTime,
+      status: post.status,
+      content: post.content
+        ? {
+            contentId: post.content.id,
+            text: post.content.text,
+            hashtags: post.content.hashtags.map((ch: any) => `#${ch.hashtag.tag}`)
+          }
+        : null,
+      media: post.imageUrl
+        ? { type: 'IMAGE', id: post.imageId, file: post.imageUrl }
+        : post.image
+        ? { type: 'IMAGE', id: post.image.id, file: post.image.file }
+        : post.reel
+        ? { type: 'REEL', id: post.reel.id, file: post.reel.file }
+        : null
+    }
   }
 
   private async getUserTimezone(userId: string): Promise<string> {
@@ -49,10 +73,16 @@ export class CalendarService {
     userId: string,
     postTimeInput: string
   ) {
-   const user = await prisma.user.findUnique({
-     where: { id: userId },
-     select: { subIndustryId: true, timezone: true }
-   })
+   // Independent reads — run together instead of one after another
+   const [user, subscription] = await Promise.all([
+     prisma.user.findUnique({
+       where: { id: userId },
+       select: { subIndustryId: true, timezone: true }
+     }),
+     prisma.subscription.findFirst({
+       where: { userId, isActive: true, expiresAt: { gt: new Date() } },
+     }),
+   ])
 
    if (!user?.subIndustryId) {
      return {
@@ -60,10 +90,6 @@ export class CalendarService {
        message: 'Please select an industry first.'
      }
    }
-
-    const subscription = await prisma.subscription.findFirst({
-      where: { userId, isActive: true, expiresAt: { gt: new Date() } },
-    })
 
     if (!subscription) {
       return {
@@ -92,17 +118,14 @@ export class CalendarService {
     // Clear today onward — preserve only yesterday and earlier (already posted/handled).
     // Using the exact current instant here (instead of start-of-day) would leave today's
     // already-passed post un-deleted while still generating a fresh post for today too.
+    // Runs alongside generatePostsForMonth — neither depends on the other's result.
     const todayStart = DateTime.now().setZone(userTz).startOf('day').toUTC().toJSDate()
-    await prisma.calendarPost.deleteMany({
-      where: { userId, postTime: { gte: todayStart } },
-    })
-
-    const generatedPosts = await generatePostsForMonth(
-      prisma,
-      userId,
-      days,
-      [user.subIndustryId]
-    )
+    const [, generatedPosts] = await Promise.all([
+      prisma.calendarPost.deleteMany({
+        where: { userId, postTime: { gte: todayStart } },
+      }),
+      generatePostsForMonth(prisma, userId, days, [user.subIndustryId]),
+    ])
 
     if (!generatedPosts.length) {
       return {
@@ -111,37 +134,45 @@ export class CalendarService {
       }
     }
 
-    const operations = generatedPosts.map(post =>
-      prisma.calendarPost.create({
-        data: {
-          userId,
-          subIndustryId: post.subIndustryId,
-          contentId: post.contentId,
-          reelId: post.reelId,
-          imageId: post.imageId,
-          type: post.type,
-          postTime: post.postTime, // already UTC from days array
-          status: post.status,
-        },
-      })
-    )
-
-    let savedPosts: CalendarPost[]
+    // IDs are generated here (instead of letting Postgres default them) so the whole
+    // batch can go in with one createMany() round trip instead of 31 individual creates.
+    const rows = generatedPosts.map(post => ({
+      id: randomUUID(),
+      userId,
+      subIndustryId: post.subIndustryId,
+      contentId: post.contentId,
+      reelId: post.reelId,
+      imageId: post.imageId,
+      type: post.type,
+      postTime: post.postTime, // already UTC from days array
+      status: post.status,
+    }))
 
     try {
-      savedPosts = await prisma.$transaction(operations)
+      await prisma.calendarPost.createMany({ data: rows })
 
       // Safety net: if this ran concurrently with another call for the same user,
       // a day could end up with more than one post — auto-remove the extras.
       await this.dedupePostsPerDay(userId)
+
+      // Re-fetch with relations so the response matches GET /calendar/plan's shape
+      const postsWithRelations = await prisma.calendarPost.findMany({
+        where: { id: { in: rows.map(r => r.id) } },
+        orderBy: { postTime: 'asc' },
+        include: {
+          content: { include: { hashtags: { include: { hashtag: true } } } },
+          reel: true,
+          image: true,
+        },
+      })
 
       return {
         success: true,
         message: 'Plan created successfully',
         planType,
         startPlan: days[0],
-        totalPosts: savedPosts.length,
-        posts: savedPosts,
+        meta: { totalPosts: postsWithRelations.length },
+        posts: postsWithRelations.map(post => this.formatPost(post)),
       }
     } catch {
       return {
@@ -185,23 +216,7 @@ async getPlanByUser(userId: string) {
     }
   }
 
-  const formattedPosts = posts.map(post => ({
-    postId: post.id,
-    postTime: post.postTime,
-    status: post.status,
-    content: post.content ? {
-      contentId: post.content.id,
-      text: post.content.text,
-      hashtags: post.content.hashtags.map(ch => `#${ch.hashtag.tag}`)
-    } : null,
-    media: post.imageUrl
-      ? { type: 'IMAGE', id: post.imageId, file: post.imageUrl }
-      : post.image
-      ? { type: 'IMAGE', id: post.image.id, file: post.image.file }
-      : post.reel
-      ? { type: 'REEL', id: post.reel.id, file: post.reel.file }
-      : null
-  }))
+  const formattedPosts = posts.map(post => this.formatPost(post))
 
   return {
     success: true,
@@ -324,27 +339,7 @@ async getPostDetails(userId: string, postId: string) {
     throw new NotFoundException('Post not found or unauthorized')
   }
 
-const formattedPost = {
-  postId: post.id,
-  postTime: post.postTime,
-  status: post.status,
-  content: post.content
-    ? {
-        contentId: post.content.id,
-        text: post.content.text,
-        hashtags: post.content.hashtags.map(ch => `#${ch.hashtag.tag}`)
-      }
-    : null,
-  media: post.imageUrl
-    ? { type: 'IMAGE', id: post.imageId, file: post.imageUrl }
-    : post.image
-    ? { type: 'IMAGE', id: post.image.id, file: post.image.file }
-    : post.reel
-    ? { type: 'REEL', id: post.reel.id, file: post.reel.file }
-    : null
-}
-
-  return { success: true, post: formattedPost }
+  return { success: true, post: this.formatPost(post) }
 }
 
  async createPost(
