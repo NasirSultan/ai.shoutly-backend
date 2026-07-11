@@ -41,15 +41,13 @@ export async function generatePostsForMonth(
     const availableReels = reels.filter(
       r =>
         r.subIndustryId === subIndustryId &&
-        !usedReels.has(r.id) &&
-        r.subIndustry.contents.some(c => !usedContent.has(c.id))
+        !usedReels.has(r.id)
     )
 
     const availableImages = images.filter(
       i =>
         i.subIndustryId === subIndustryId &&
-        !usedImages.has(i.id) &&
-        i.subIndustry.contents.some(c => !usedContent.has(c.id))
+        !usedImages.has(i.id)
     )
 
     if (!availableReels.length && !availableImages.length) continue
