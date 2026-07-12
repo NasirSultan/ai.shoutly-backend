@@ -14,6 +14,7 @@ import { BrevoModule } from '../brevo/brevo.module'
     BrevoModule,
   ],
   providers: [JobsService, PostQueue, PostWorker],
+  exports: [PostQueue],
 })
 
   export class JobsModule implements OnModuleInit {
@@ -24,4 +25,3 @@ import { BrevoModule } from '../brevo/brevo.module'
       console.log('[JobsModule] Module successfully loaded and worker tracking activated! ✅');
     }
   }
-  
