@@ -1,4 +1,4 @@
-import { Injectable, InternalServerErrorException, NotFoundException } from '@nestjs/common'
+import { Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common'
 import OpenAI from 'openai'
 import { PrismaService } from '../lib/prisma.service'
 import { UploadDocumentDto } from './dto/upload-document.dto'
@@ -43,6 +43,13 @@ export interface ChatResponse {
   retrievedAt: string
 }
 
+interface QueryRewrite {
+  language: string
+  rewrittenQuery: string
+}
+
+const SUPPORT_EMAIL = 'hello@shoutlyai.com'
+
 // OpenAI — embeddings only (text-embedding-3-small, 768-dim matches DB schema)
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
@@ -55,6 +62,8 @@ const CHAT_MODEL = 'deepseek-chat'
 
 @Injectable()
 export class RagService {
+  private readonly logger = new Logger(RagService.name)
+
   constructor(private readonly prisma: PrismaService) {}
 
   async embedText(text: string): Promise<number[]> {
@@ -120,7 +129,36 @@ export class RagService {
     return query.replace(/[-_/\\|]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
   }
 
-  async searchSimilar(query: string, topK = 5): Promise<RagDocumentWithScore[]> {
+  private async rewriteQuery(query: string): Promise<QueryRewrite> {
+    const prompt = `Detect the language+script of this message, then write the same question correctly in English (fix typos, translate faithfully, do not add or change intent).
+
+Message: "${query}"
+
+JSON only:
+{"language":"<language and script, e.g. Roman Urdu (Latin script)>","rewrittenQuery":"<clear english query>"}`
+
+    try {
+      const completion = await deepseek.chat.completions.create({
+        model: CHAT_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        max_tokens: 150,
+      })
+
+      const raw = (completion.choices[0]?.message?.content ?? '').trim()
+      const jsonMatch = raw.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) throw new Error('No JSON in rewrite response')
+
+      const parsed: QueryRewrite = JSON.parse(jsonMatch[0])
+      if (!parsed.rewrittenQuery) throw new Error('Empty rewrittenQuery')
+      return parsed
+    } catch (error: any) {
+      this.logger.warn(`Query rewrite failed, falling back to original query: ${error.message}`)
+      return { language: 'English', rewrittenQuery: query }
+    }
+  }
+
+  async searchSimilar(query: string, topK = 5, excludeCategories: string[] = []): Promise<RagDocumentWithScore[]> {
     const embedding = await this.embedText(this.normalizeQuery(query))
     const vectorStr = `[${embedding.join(',')}]`
     const limit = Math.max(1, Math.min(10, topK))
@@ -137,10 +175,12 @@ export class RagService {
          updated_at::text,
          1 - (embedding <=> $1::vector) AS similarity
        FROM rag_documents
+       WHERE cardinality($3::text[]) = 0 OR NOT (COALESCE(metadata->>'category', '') = ANY($3::text[]))
        ORDER BY embedding <=> $1::vector
        LIMIT $2`,
       vectorStr,
       limit,
+      excludeCategories,
     )
 
     return rows.map((r) => ({
@@ -152,37 +192,44 @@ export class RagService {
 
   async chat(dto: ChatQueryDto): Promise<ChatResponse> {
     const topK = dto.topK ?? 5
-    const sources = await this.searchSimilar(dto.query, topK)
+    this.logger.log(`[chat] query received: "${dto.query}"`)
+
+    const { language, rewrittenQuery } = await this.rewriteQuery(dto.query)
+    this.logger.log(`[chat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`)
+
+    const sources = await this.searchSimilar(rewrittenQuery, topK, ['greeting'])
+    this.logger.log(
+      `[chat] retrieved ${sources.length} chunk(s): ` +
+        sources.map((s) => `"${s.title}" (similarity: ${s.similarity.toFixed(3)})`).join(', '),
+    )
 
     const contextUsed = sources.length > 0
-    const contextBlock = sources
-      .map((s, i) => `[${i + 1}] "${s.title}" (similarity: ${s.similarity.toFixed(3)})\n${s.content}`)
-      .join('\n\n---\n\n')
+    const contextBlock = sources.map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`).join('\n\n---\n\n')
 
-    const prompt = `You are a helpful assistant that answers questions based ONLY on provided context documents.
+    const prompt = `You are ShoutlyAI's support assistant. Never mention "context"/"documents" — answer naturally, first person.
 
-${contextUsed ? `Context documents:\n---\n${contextBlock}\n---` : 'No context documents were found.'}
+${contextUsed ? `Reference:\n${contextBlock}` : 'No reference material found for this question.'}
 
-User question: ${dto.query}
+Question: ${dto.query}
 
 Rules:
-- Answer ONLY from the context above
-- If context is insufficient, clearly say so
-- Be concise and factual
-- Do NOT invent or assume information
+- If the user is just greeting you or making small talk, respond warmly as ShoutlyAI's assistant — no reference material needed for this.
+- Otherwise, use ONLY the reference above. Never invent facts.
+- Reply only in: ${language}
+- Is the question ABOUT ShoutlyAI (product/company/service)?
+  - Yes + reference answers it → answer directly.
+  - Yes + reference lacks it → name the specific topic you don't have info on (e.g. "I don't have details on discounts"), then tell them to email ${SUPPORT_EMAIL}.
+  - No (unrelated topic) → say you don't have that info. Do NOT mention ${SUPPORT_EMAIL}.
 
-Respond with valid JSON only, exactly in this format:
-{
-  "answer": "<your answer>",
-  "confidence": "<high|medium|low>",
-  "contextUsed": <true|false>
-}`
+JSON only:
+{"answer":"<in ${language}>","confidence":"high|medium|low","contextUsed":<true|false>}`
 
     try {
       const completion = await deepseek.chat.completions.create({
         model: CHAT_MODEL,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0,
+        max_tokens: 500,
       })
 
       const raw = (completion.choices[0]?.message?.content ?? '').trim()
@@ -192,6 +239,8 @@ Respond with valid JSON only, exactly in this format:
       const parsed: { answer: string; confidence: 'high' | 'medium' | 'low'; contextUsed: boolean } =
         JSON.parse(jsonMatch[0])
 
+      this.logger.log(`[chat] final answer (confidence: ${parsed.confidence}): "${parsed.answer}"`)
+
       return {
         success: true,
         query: dto.query,
@@ -200,41 +249,60 @@ Respond with valid JSON only, exactly in this format:
         retrievedAt: new Date().toISOString(),
       }
     } catch (error: any) {
+      this.logger.error(`[chat] chat generation failed: ${error.message}`)
       throw new InternalServerErrorException(`Chat generation failed: ${error.message}`)
     }
   }
 
   async *streamChat(dto: ChatQueryDto): AsyncGenerator<string> {
-    const sources = await this.searchSimilar(dto.query, dto.topK ?? 5)
+    this.logger.log(`[streamChat] query received: "${dto.query}"`)
+
+    const { language, rewrittenQuery } = await this.rewriteQuery(dto.query)
+    this.logger.log(`[streamChat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`)
+
+    const sources = await this.searchSimilar(rewrittenQuery, dto.topK ?? 5, ['greeting'])
     const top2 = sources.slice(0, 2)
+    this.logger.log(
+      `[streamChat] retrieved ${sources.length} chunk(s), using top ${top2.length}: ` +
+        top2.map((s) => `"${s.title}" (similarity: ${s.similarity.toFixed(3)})`).join(', '),
+    )
 
-    const contextBlock = top2
-      .map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`)
-      .join('\n\n---\n\n')
+    const contextBlock = top2.map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`).join('\n\n---\n\n')
 
-    const prompt = `You are a helpful assistant. Answer ONLY from the context below.
+    const prompt = `You are ShoutlyAI's support assistant. Never mention "context"/"documents" — answer naturally, first person.
 
-Context:
----
+Reference:
 ${contextBlock}
----
 
 Question: ${dto.query}
 
-Rules: Answer from context only. If insufficient, say so. Be concise.`
+Rules:
+- If the user is just greeting you or making small talk, respond warmly as ShoutlyAI's assistant — no reference material needed for this.
+- Otherwise, use ONLY the reference above. Never invent facts.
+- Reply only in: ${language}
+- Is the question ABOUT ShoutlyAI (product/company/service)?
+  - Yes + reference answers it → answer directly.
+  - Yes + reference lacks it → name the specific topic you don't have info on (e.g. "I don't have details on discounts"), then tell them to email ${SUPPORT_EMAIL}.
+  - No (unrelated topic) → say you don't have that info. Do NOT mention ${SUPPORT_EMAIL}.`
 
     const stream = await deepseek.chat.completions.create({
       model: CHAT_MODEL,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0,
+      max_tokens: 500,
       stream: true,
     })
 
+    let fullAnswer = ''
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content ?? ''
-      if (text) yield `data: ${JSON.stringify({ text })}\n\n`
+      if (text) {
+        fullAnswer += text
+        yield `data: ${JSON.stringify({ text })}\n\n`
+      }
     }
 
+    this.logger.log(`[streamChat] final answer: "${fullAnswer}"`)
     yield `data: [DONE]\n\n`
   }
 
