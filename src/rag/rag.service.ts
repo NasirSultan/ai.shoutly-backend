@@ -213,13 +213,16 @@ ${contextUsed ? `Reference:\n${contextBlock}` : 'No reference material found for
 Question: ${dto.query}
 
 Rules:
-- If the user is just greeting you or making small talk, respond warmly as ShoutlyAI's assistant — no reference material needed for this.
-- Otherwise, use ONLY the reference above. Never invent facts.
-- Reply only in: ${language}
-- Is the question ABOUT ShoutlyAI (product/company/service)?
-  - Yes + reference answers it → answer directly.
-  - Yes + reference lacks it → name the specific topic you don't have info on (e.g. "I don't have details on discounts"), then tell them to email ${SUPPORT_EMAIL}.
-  - No (unrelated topic) → say you don't have that info. Do NOT mention ${SUPPORT_EMAIL}.
+- Greeting/small talk → reply warmly as ShoutlyAI's assistant, no reference needed.
+- Else: use ONLY the reference above, never invent facts.
+- Reply only in ${language} — short, plain, human words, no em dashes (—).
+- Answer ONLY what was asked. Skip unrequested extra details (e.g. don't mention payment methods unless asked about payment).
+- Do NOT end with a generic closer like "What would you like to know?" or "How can I help?". Only ask a follow-up question if the user's own query is genuinely unclear or ambiguous.
+- Keep it short overall. If comparing 2+ things (plans, platforms, steps, etc), ALWAYS use one bullet per item, each on its own line — never merge them into one sentence.
+- About ShoutlyAI?
+  - Yes, reference answers it → answer directly.
+  - Yes, reference lacks it → name the missing topic, then tell them to email ${SUPPORT_EMAIL}.
+  - No → say you don't have that info. No email.
 
 JSON only:
 {"answer":"<in ${language}>","confidence":"high|medium|low","contextUsed":<true|false>}`
@@ -277,13 +280,16 @@ ${contextBlock}
 Question: ${dto.query}
 
 Rules:
-- If the user is just greeting you or making small talk, respond warmly as ShoutlyAI's assistant — no reference material needed for this.
-- Otherwise, use ONLY the reference above. Never invent facts.
-- Reply only in: ${language}
-- Is the question ABOUT ShoutlyAI (product/company/service)?
-  - Yes + reference answers it → answer directly.
-  - Yes + reference lacks it → name the specific topic you don't have info on (e.g. "I don't have details on discounts"), then tell them to email ${SUPPORT_EMAIL}.
-  - No (unrelated topic) → say you don't have that info. Do NOT mention ${SUPPORT_EMAIL}.`
+- Greeting/small talk → reply warmly as ShoutlyAI's assistant, no reference needed.
+- Else: use ONLY the reference above, never invent facts.
+- Reply only in ${language} — short, plain, human words, no em dashes (—).
+- Answer ONLY what was asked. Skip unrequested extra details (e.g. don't mention payment methods unless asked about payment).
+- Do NOT end with a generic closer like "What would you like to know?" or "How can I help?". Only ask a follow-up question if the user's own query is genuinely unclear or ambiguous.
+- Keep it short overall. If comparing 2+ things (plans, platforms, steps, etc), ALWAYS use one bullet per item, each on its own line — never merge them into one sentence.
+- About ShoutlyAI?
+  - Yes, reference answers it → answer directly.
+  - Yes, reference lacks it → name the missing topic, then tell them to email ${SUPPORT_EMAIL}.
+  - No → say you don't have that info. No email.`
 
     const stream = await deepseek.chat.completions.create({
       model: CHAT_MODEL,
