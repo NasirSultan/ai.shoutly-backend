@@ -20,6 +20,7 @@ import { PostsModule } from './posts/posts.module'
 import { FestivalsModule } from './festivals/festivals.module'
 import { NotesModule } from './notes/notes.module'
 import { DashboardModule } from './dashboard/dashboard.module'
+import { NewsletterModule } from './newsletter/newsletter.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -39,6 +40,7 @@ import { DashboardModule } from './dashboard/dashboard.module'
   FestivalsModule,
   NotesModule,
   DashboardModule,
+  NewsletterModule,
 ],
   controllers: [AppController],
   providers: [AppService],

@@ -423,3 +423,11 @@ model RagDocument {
   @@map("rag_documents")
   @@index([createdAt])
 }
+
+model NewsletterSubscriber {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
