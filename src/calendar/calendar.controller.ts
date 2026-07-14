@@ -93,4 +93,11 @@ async createPost(
   )
 }
 
+@UseGuards(AuthGuard)
+@Post('post/:postId/publish')
+async publishNow(@Req() req, @Param('postId') postId: string) {
+  const userId = req.user.id
+  return await this.calendarService.publishNow(userId, postId)
+}
+
 }

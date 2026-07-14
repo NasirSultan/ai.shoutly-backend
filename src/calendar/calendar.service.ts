@@ -3,9 +3,12 @@ import { generatePostsForMonth } from './generators/calendar.generator'
 import { DateTime } from 'luxon'
 import { randomUUID } from 'crypto'
 import { prisma } from '../lib/prisma'
+import { PostQueue } from '../jobs/post.queue'
 
 @Injectable()
 export class CalendarService {
+
+  constructor(private readonly postQueue: PostQueue) {}
 
 
   private toUTC(timeStr: string, timezone: string, baseDate?: Date): Date {
@@ -413,5 +416,40 @@ async getPostDetails(userId: string, postId: string) {
     }
   }
 
+  // Publishes a calendar post right away instead of waiting for its scheduled
+  // postTime. Reuses the exact same pipeline as the jobs module's scheduler:
+  // lock the post to 'POSTING' then hand it to PostQueue, which PostWorker
+  // (Outstand dispatch, status flip to POSTED/FAILED, Brevo email) already
+  // processes almost immediately. This method just skips the "is it due yet"
+  // check and the cron — everything after enqueue is identical.
+  async publishNow(userId: string, postId: string) {
+    const post = await prisma.calendarPost.findUnique({ where: { id: postId } })
+
+    if (!post || post.userId !== userId) {
+      return { success: false, message: 'Post not found or unauthorized' }
+    }
+
+    if (post.status !== 'SCHEDULED') {
+      return {
+        success: false,
+        message: `Post cannot be published from status ${post.status}`,
+      }
+    }
+
+    // Same locking pattern as jobs.service's checkDuePosts: flip to POSTING
+    // conditionally so a concurrent request/cron tick can't double-enqueue it.
+    const locked = await prisma.calendarPost.updateMany({
+      where: { id: postId, status: 'SCHEDULED' },
+      data: { status: 'POSTING' },
+    })
+
+    if (locked.count === 0) {
+      return { success: false, message: 'Post is already being processed' }
+    }
+
+    await this.postQueue.addPublishJob(postId)
+
+    return { success: true, message: 'Post is being published now' }
+  }
 
 }
