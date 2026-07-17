@@ -86,4 +86,76 @@ export class SubscriptionService {
   getPrice(billing: Billing, currency: Currency) {
     return PlanPrices[currency][billing];
   }
+
+  async getAllPaymentsForAdmin(opts: {
+    page: number;
+    limit: number;
+    search?: string;
+    status?: "active" | "expired" | "trial";
+    plan?: string;
+  }) {
+    const { page, limit, search, status, plan } = opts;
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, any> = {};
+    if (search) {
+      where.user = {
+        OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+        ],
+      };
+    }
+    if (status === "active") where.isActive = true;
+    if (status === "expired") where.isActive = false;
+    if (status === "trial") where.isTrial = true;
+    if (plan) where.plan = plan;
+
+    const [filteredTotal, rows, grandTotal, activeCount, trialCount, revenueAgg] =
+      await Promise.all([
+        prisma.subscription.count({ where }),
+        prisma.subscription.findMany({
+          where,
+          include: { user: { select: { id: true, name: true, email: true } } },
+          orderBy: { createdAt: "desc" },
+          skip,
+          take: limit,
+        }),
+        prisma.subscription.count(),
+        prisma.subscription.count({ where: { isActive: true } }),
+        prisma.subscription.count({ where: { isTrial: true } }),
+        prisma.subscription.aggregate({
+          where: { isTrial: false },
+          _sum: { amount: true },
+        }),
+      ]);
+
+    return {
+      summary: {
+        totalTransactions: grandTotal,
+        activeSubscriptions: activeCount,
+        trialSubscriptions: trialCount,
+        totalRevenue: revenueAgg._sum.amount ?? 0,
+      },
+      data: rows.map((r) => ({
+        transactionId: r.id,
+        user: r.user,
+        plan: r.plan,
+        billing: r.billing,
+        amount: r.amount,
+        currency: r.currency,
+        isActive: r.isActive,
+        isTrial: r.isTrial,
+        startedAt: r.startedAt,
+        expiresAt: r.expiresAt,
+        createdAt: r.createdAt,
+      })),
+      meta: {
+        total: filteredTotal,
+        page,
+        limit,
+        totalPages: Math.ceil(filteredTotal / limit) || 1,
+      },
+    };
+  }
 }

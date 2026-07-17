@@ -1,6 +1,8 @@
-import { Controller, Post, Get, Delete, Body, Param, ValidationPipe, HttpCode, HttpStatus } from '@nestjs/common'
+import { Controller, Post, Get, Delete, Body, Param, ValidationPipe, HttpCode, HttpStatus, UseGuards } from '@nestjs/common'
 import { NewsletterService } from './newsletter.service'
 import { SubscribeNewsletterDto } from './dto/subscribe-newsletter.dto'
+import { AuthGuard } from '../common/guards/auth.guard'
+import { RolesGuard } from '../common/guards/roles.guard'
 
 @Controller('newsletter')
 export class NewsletterController {
@@ -13,6 +15,7 @@ export class NewsletterController {
   }
 
   @Get()
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   findAll() {
     return this.newsletterService.findAll()
   }
@@ -24,6 +27,7 @@ export class NewsletterController {
   }
 
   @Delete(':id')
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   remove(@Param('id') id: string) {
     return this.newsletterService.remove(id)
   }
