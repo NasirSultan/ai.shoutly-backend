@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from "@nestjs/common";
+import { Injectable, BadRequestException, NotFoundException } from "@nestjs/common";
 import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
 import { prisma } from "../lib/prisma";
@@ -156,6 +156,69 @@ export class SubscriptionService {
         limit,
         totalPages: Math.ceil(filteredTotal / limit) || 1,
       },
+    };
+  }
+
+  async getUserPaymentDetailForAdmin(userId: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        brandName: true,
+        createdAt: true,
+        industry: { select: { name: true } },
+        subIndustry: { select: { name: true } },
+      },
+    });
+    if (!user) throw new NotFoundException(`User ${userId} not found`);
+
+    const [subscriptions, revenueAgg] = await Promise.all([
+      prisma.subscription.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.subscription.aggregate({
+        where: { userId, isTrial: false },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const activeSubscription = subscriptions.find((s) => s.isActive) ?? null;
+
+    return {
+      user,
+      summary: {
+        totalTransactions: subscriptions.length,
+        totalSpent: revenueAgg._sum.amount ?? 0,
+        hasActivePlan: !!activeSubscription,
+        currentPlan: activeSubscription
+          ? {
+              plan: activeSubscription.plan,
+              billing: activeSubscription.billing,
+              amount: activeSubscription.amount,
+              currency: activeSubscription.currency,
+              isTrial: activeSubscription.isTrial,
+              startedAt: activeSubscription.startedAt,
+              expiresAt: activeSubscription.expiresAt,
+            }
+          : null,
+      },
+      transactions: subscriptions.map((s) => ({
+        transactionId: s.id,
+        plan: s.plan,
+        billing: s.billing,
+        amount: s.amount,
+        currency: s.currency,
+        isActive: s.isActive,
+        isTrial: s.isTrial,
+        startedAt: s.startedAt,
+        expiresAt: s.expiresAt,
+        createdAt: s.createdAt,
+      })),
     };
   }
 }

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Req, Query, UseGuards } from "@nestjs/common";
+import { Controller, Post, Body, Get, Req, Query, Param, UseGuards } from "@nestjs/common";
 import { SubscriptionService } from "./subscription.service";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
 import { AuthGuard } from "../common/guards/auth.guard";
@@ -43,5 +43,11 @@ export class SubscriptionController {
       status,
       plan,
     });
+  }
+
+  @Get("admin/payments/:userId")
+  @UseGuards(new RolesGuard(["SUPERADMIN"]))
+  async adminUserPaymentDetail(@Param("userId") userId: string) {
+    return this.subscriptionService.getUserPaymentDetailForAdmin(userId);
   }
 }
