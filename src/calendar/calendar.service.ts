@@ -54,6 +54,47 @@ export class CalendarService {
     return user?.timezone || 'UTC'
   }
 
+  // Cached in-memory after first lookup per running instance. Not a schema
+  // change — this is a single ordinary row, created once and reused.
+  private reservedSubIndustryId: string | null = null
+
+  // The Content/Image tables are the shared admin content bank that
+  // generatePlan draws from for every user in a given sub-industry (see
+  // generatePostsForMonth's `where: { subIndustryId: { in: subIndustryIds } }`
+  // query). Manual, user-authored posts (createManualPost/updateManualPost)
+  // still need to create Content/Image rows the same way createPost/updatePost
+  // do, but must NOT be tagged with any real sub-industry — otherwise they'd
+  // be eligible to get randomly pulled onto some other user's auto-generated
+  // calendar. This reserved SubIndustry exists purely as a tag no real user's
+  // subIndustryId will ever equal, so posts tagged with it can never match a
+  // real generatePlan query.
+  private async getReservedSubIndustryId(): Promise<string> {
+    if (this.reservedSubIndustryId) return this.reservedSubIndustryId
+
+    const RESERVED_NAME = '__personal_posts__'
+
+    let subIndustry = await prisma.subIndustry.findFirst({
+      where: { name: RESERVED_NAME },
+    })
+
+    if (!subIndustry) {
+      let industry = await prisma.industry.findFirst({
+        where: { name: '__system__' },
+      })
+      if (!industry) {
+        industry = await prisma.industry.create({
+          data: { name: '__system__' },
+        })
+      }
+      subIndustry = await prisma.subIndustry.create({
+        data: { name: RESERVED_NAME, industryId: industry.id },
+      })
+    }
+
+    this.reservedSubIndustryId = subIndustry.id
+    return subIndustry.id
+  }
+
   // Keeps the most-recently-created post per calendar day for this user and deletes
   // any extras — guards against duplicate posts if generatePlan runs twice concurrently,
   // and against stale leftovers surviving alongside a freshly regenerated day.
@@ -234,18 +275,35 @@ async getPlanByUser(userId: string) {
 
 
 
-
- async updatePost(
+  async updatePost(
     userId: string,
     postId: string,
     body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string,timezone?: string },
     fileData?: { imageUrl: string; deleteUrl: string }
   ) {
-    const post = await prisma.calendarPost.findUnique({ where: { id: postId } })
+    const post = await prisma.calendarPost.findUnique({
+      where: { id: postId },
+      include: { content: true, image: true }
+    })
 
     if (!post || post.userId !== userId) {
       return { success: false, message: 'Post not found or unauthorized' }
     }
+
+    // Detect whether this post is "manual" (created/last-edited as a personal
+    // post) by checking if its current Content/Image already points at the
+    // reserved sentinel sub-industry. If so, any new Content/Image rows this
+    // edit creates get tagged with the sentinel too, keeping it isolated from
+    // generatePlan's shared pool. Otherwise it's treated as a normal
+    // auto-generated post and new rows are tagged with the post's real
+    // sub-industry, same as before.
+    // Caveat: a manual post with neither caption nor image yet has nothing to
+    // check, so its first edit will be treated as non-manual by default.
+    const reservedSubIndustryId = await this.getReservedSubIndustryId()
+    const isManual =
+      post.content?.subIndustryId === reservedSubIndustryId ||
+      post.image?.subIndustryId === reservedSubIndustryId
+    const targetSubIndustryId = isManual ? reservedSubIndustryId : post.subIndustryId
 
     let updatedData: any = {}
 
@@ -270,7 +328,7 @@ async getPlanByUser(userId: string) {
     if (body.contentText) {
       operations.push(
         prisma.content.create({
-          data: { text: body.contentText, subIndustryId: post.subIndustryId }
+          data: { text: body.contentText, subIndustryId: targetSubIndustryId }
         })
       )
     }
@@ -282,7 +340,7 @@ async getPlanByUser(userId: string) {
             file: imageData.imageUrl,
             deleteUrl: imageData.deleteUrl,
             text: false,
-            subIndustryId: post.subIndustryId
+            subIndustryId: targetSubIndustryId
           }
         })
       )
@@ -307,22 +365,30 @@ async getPlanByUser(userId: string) {
     }
 
     try {
-      const updatedPost = await prisma.calendarPost.update({
+      await prisma.calendarPost.update({
         where: { id: postId },
         data: updatedData
+      })
+
+      const postWithRelations = await prisma.calendarPost.findUnique({
+        where: { id: postId },
+        include: {
+          content: { include: { hashtags: { include: { hashtag: true } } } },
+          reel: true,
+          image: true,
+        },
       })
 
       return {
         success: true,
         message: 'Post updated',
-        post: updatedPost
+        post: this.formatPost(postWithRelations)
       }
     } catch {
       throw new InternalServerErrorException('Failed to update post')
     }
   }
-
-
+  
 async getPostDetails(userId: string, postId: string) {
   const post = await prisma.calendarPost.findUnique({
     where: { id: postId },
@@ -348,7 +414,7 @@ async getPostDetails(userId: string, postId: string) {
 
  async createPost(
     userId: string,
-    body: { subIndustryId: string; postTime: string; contentText?: string; imageUrl?: string },
+    body: { subIndustryId: string; postTime: string; contentText?: string; imageUrl?: string; timezone?: string },
     imageData?: { imageUrl: string; deleteUrl: string }
   ) {
     const { subIndustryId, postTime, contentText } = body
@@ -392,9 +458,10 @@ async getPostDetails(userId: string, postId: string) {
       imageUrl = imageData.imageUrl
     }
 
-    // Convert user's local time to UTC
-    const userTz = await this.getUserTimezone(userId)
-    const utcPostTime = this.toUTC(postTime, userTz)
+    // Convert postTime (a full ISO datetime, in the user's local timezone) to UTC.
+    // Matches updatePost's contract so callers can pick any date, not just today.
+    const userTz = body.timezone || await this.getUserTimezone(userId)
+    const utcPostTime = DateTime.fromISO(postTime, { zone: userTz }).toUTC().toJSDate()
 
     const post = await prisma.calendarPost.create({
       data: {
@@ -409,10 +476,21 @@ async getPostDetails(userId: string, postId: string) {
       }
     })
 
+    // Re-fetch with relations so the response matches formatPost's shape
+    // (same nested content/media structure as getPostDetails and getPlanByUser).
+    const postWithRelations = await prisma.calendarPost.findUnique({
+      where: { id: post.id },
+      include: {
+        content: { include: { hashtags: { include: { hashtag: true } } } },
+        reel: true,
+        image: true,
+      },
+    })
+
     return {
       success: true,
       message: 'Post created',
-      post
+      post: this.formatPost(postWithRelations)
     }
   }
 
@@ -450,6 +528,206 @@ async getPostDetails(userId: string, postId: string) {
     await this.postQueue.addPublishJob(postId)
 
     return { success: true, message: 'Post is being published now' }
+  }
+
+  // User-only variant of createPost. Behaves the same (creates a Content row
+  // for the caption and an Image row for the photo, same as createPost) except
+  // it tags those rows with the reserved sentinel sub-industry instead of any
+  // real one, so this personal post can never be pulled into another user's
+  // auto-generated plan via generatePostsForMonth. The CalendarPost row itself
+  // still carries the user's real subIndustryId, so it displays and reports
+  // normally — only the underlying Content/Image rows are isolated.
+  async createManualPost(
+    userId: string,
+    body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string },
+    imageData?: { imageUrl: string; deleteUrl: string }
+  ) {
+    const { postTime, contentText } = body
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { subIndustryId: true },
+    })
+
+    if (!user?.subIndustryId) {
+      return {
+        success: false,
+        message: 'Please select an industry first.',
+      }
+    }
+
+    const reservedSubIndustryId = await this.getReservedSubIndustryId()
+
+    let contentId: string | undefined
+    let imageId: string | undefined
+    let imageUrl: string | undefined
+
+    const operations: any[] = []
+
+    if (contentText) {
+      operations.push(
+        prisma.content.create({
+          data: { text: contentText, subIndustryId: reservedSubIndustryId }
+        })
+      )
+    }
+
+    if (imageData) {
+      operations.push(
+        prisma.image.create({
+          data: {
+            file: imageData.imageUrl,
+            deleteUrl: imageData.deleteUrl,
+            text: false,
+            subIndustryId: reservedSubIndustryId
+          }
+        })
+      )
+    }
+
+    const results = operations.length ? await Promise.all(operations) : []
+
+    if (contentText) {
+      contentId = results[0]?.id
+    }
+
+    if (imageData) {
+      const index = contentText ? 1 : 0
+      imageId = results[index]?.id
+      imageUrl = imageData.imageUrl
+    }
+
+    const userTz = body.timezone || await this.getUserTimezone(userId)
+    const utcPostTime = DateTime.fromISO(postTime, { zone: userTz }).toUTC().toJSDate()
+
+    const post = await prisma.calendarPost.create({
+      data: {
+        userId,
+        subIndustryId: user.subIndustryId,
+        contentId,
+        imageId,
+        imageUrl,
+        type: 'IMAGE',
+        postTime: utcPostTime,
+        status: 'SCHEDULED'
+      }
+    })
+
+    const postWithRelations = await prisma.calendarPost.findUnique({
+      where: { id: post.id },
+      include: {
+        content: { include: { hashtags: { include: { hashtag: true } } } },
+        reel: true,
+        image: true,
+      },
+    })
+
+    return {
+      success: true,
+      message: 'Post created',
+      post: this.formatPost(postWithRelations)
+    }
+  }
+
+  // User-only variant of updatePost. Same behavior, but Content/Image rows
+  // created for the edit are tagged with the reserved sentinel sub-industry
+  // instead of the post's real one — see createManualPost's comment above.
+  async updateManualPost(
+    userId: string,
+    postId: string,
+    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string },
+    fileData?: { imageUrl: string; deleteUrl: string }
+  ) {
+    const post = await prisma.calendarPost.findUnique({ where: { id: postId } })
+
+    if (!post || post.userId !== userId) {
+      return { success: false, message: 'Post not found or unauthorized' }
+    }
+
+    const reservedSubIndustryId = await this.getReservedSubIndustryId()
+
+    let updatedData: any = {}
+
+    if (body.postTime) {
+      updatedData.postTime = DateTime
+        .fromISO(body.postTime, { zone: body.timezone })
+        .toUTC()
+        .toISO()
+    }
+    if (body.status) updatedData.status = body.status
+    if (body.reelId !== undefined) updatedData.reelId = body.reelId
+
+    let imageData: { imageUrl: string; deleteUrl: string } | undefined
+    if (body.imageUrl) {
+      imageData = { imageUrl: body.imageUrl, deleteUrl: '' }
+    } else if (fileData) {
+      imageData = fileData
+    }
+
+    const operations: Array<Promise<{ id: string }>> = []
+
+    if (body.contentText) {
+      operations.push(
+        prisma.content.create({
+          data: { text: body.contentText, subIndustryId: reservedSubIndustryId }
+        })
+      )
+    }
+
+    if (imageData) {
+      operations.push(
+        prisma.image.create({
+          data: {
+            file: imageData.imageUrl,
+            deleteUrl: imageData.deleteUrl,
+            text: false,
+            subIndustryId: reservedSubIndustryId
+          }
+        })
+      )
+    }
+
+    if (operations.length) {
+      const results = await Promise.all(operations)
+
+      if (body.contentText) {
+        const newContent = results.find(r => 'text' in r)
+        if (newContent) updatedData.contentId = newContent.id
+      }
+
+      if (imageData) {
+        const newImage = results.find(r => 'file' in r)
+        if (newImage) {
+          updatedData.imageId = newImage.id
+          updatedData.imageUrl = imageData.imageUrl
+          updatedData.type = 'IMAGE'
+        }
+      }
+    }
+
+    try {
+      await prisma.calendarPost.update({
+        where: { id: postId },
+        data: updatedData
+      })
+
+      const postWithRelations = await prisma.calendarPost.findUnique({
+        where: { id: postId },
+        include: {
+          content: { include: { hashtags: { include: { hashtag: true } } } },
+          reel: true,
+          image: true,
+        },
+      })
+
+      return {
+        success: true,
+        message: 'Post updated',
+        post: this.formatPost(postWithRelations)
+      }
+    } catch {
+      throw new InternalServerErrorException('Failed to update post')
+    }
   }
 
 }

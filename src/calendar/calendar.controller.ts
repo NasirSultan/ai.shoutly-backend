@@ -70,7 +70,7 @@ async updateCalendarPost(
 @UseInterceptors(FileInterceptor('image'))
 async createPost(
   @Req() req,
-  @Body() body: { subIndustryId: string; postTime: string; contentText?: string; imageUrl?: string },
+  @Body() body: { subIndustryId: string; postTime: string; contentText?: string; imageUrl?: string; timezone?: string },
   @UploadedFile() file?: Express.Multer.File
 ) {
   const userId = req.user.id
@@ -98,6 +98,50 @@ async createPost(
 async publishNow(@Req() req, @Param('postId') postId: string) {
   const userId = req.user.id
   return await this.calendarService.publishNow(userId, postId)
+}
+
+// User-only "manual" post endpoints — separate from POST/PATCH /calendar/post
+// so those existing routes stay completely untouched. See createManualPost's
+// comment in calendar.service.ts for why this isolation exists.
+@Post('post/manual')
+@UseGuards(AuthGuard)
+@UseInterceptors(FileInterceptor('image'))
+async createManualPost(
+  @Req() req,
+  @Body() body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string },
+  @UploadedFile() file?: Express.Multer.File
+) {
+  const userId = req.user.id
+
+  let imageData
+  if (body.imageUrl) {
+    imageData = { imageUrl: body.imageUrl, deleteUrl: '' }
+  } else if (file) {
+    imageData = await this.imgbbService.uploadFile(file)
+  }
+
+  return await this.calendarService.createManualPost(userId, body, imageData)
+}
+
+@UseGuards(AuthGuard)
+@Patch('post/manual/:postId')
+@UseInterceptors(FileInterceptor('image'))
+async updateManualPost(
+  @Req() req,
+  @Param('postId') postId: string,
+  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string },
+  @UploadedFile() file?: Express.Multer.File
+) {
+  const userId = req.user.id
+
+  let imageData
+  if (body.imageUrl) {
+    imageData = { imageUrl: body.imageUrl, deleteUrl: '' }
+  } else if (file) {
+    imageData = await this.imgbbService.uploadFile(file)
+  }
+
+  return await this.calendarService.updateManualPost(userId, postId, body, imageData)
 }
 
 }
