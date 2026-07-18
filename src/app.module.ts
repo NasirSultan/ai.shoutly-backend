@@ -21,6 +21,7 @@ import { FestivalsModule } from './festivals/festivals.module'
 import { NotesModule } from './notes/notes.module'
 import { DashboardModule } from './dashboard/dashboard.module'
 import { NewsletterModule } from './newsletter/newsletter.module'
+import { AuditLogModule } from './audit-log/audit-log.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -41,6 +42,7 @@ import { NewsletterModule } from './newsletter/newsletter.module'
   NotesModule,
   DashboardModule,
   NewsletterModule,
+  AuditLogModule,
 ],
   controllers: [AppController],
   providers: [AppService],

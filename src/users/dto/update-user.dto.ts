@@ -2,7 +2,6 @@ export class UpdateUserDto {
   name?: string;
   displayName?: string;
   email?: string;
-  password?: string;
   phone?: string;
   jobTitle?: string;
   industryId?: string;
@@ -16,4 +15,5 @@ export class UpdateUserDto {
   pushNotification?: boolean;
   weeklyNotification?: boolean;
   role?: 'USER' | 'SUPERADMIN' | 'CONTENTADMIN' | 'TECHNICIANADMIN' | 'FINANCEADMIN';
+  isActive?: boolean;
 }

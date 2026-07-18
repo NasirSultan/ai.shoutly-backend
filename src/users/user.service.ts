@@ -6,18 +6,109 @@ import { Express } from 'express';
 import { UpdatePasswordDto } from './dto/update-password.dto';
 import * as bcrypt from 'bcrypt';
 import { prisma } from '../lib/prisma';
+import { AuditLogService, AuditActor } from '../audit-log/audit-log.service';
 @Injectable()
 export class UserService {
   private prisma = prisma;
 
-  constructor(private readonly imgbbService: ImgbbService) {}
+  constructor(
+    private readonly imgbbService: ImgbbService,
+    private readonly auditLogService: AuditLogService,
+  ) {}
+
+  // Fields safe to return to the admin panel — excludes password/otp/refreshToken.
+  private readonly adminSelect = {
+    id: true,
+    name: true,
+    email: true,
+    phone: true,
+    file: true,
+    brandName: true,
+    brandLogo: true,
+    website: true,
+    role: true,
+    isActive: true,
+    connectedSocials: true,
+    jobTitle: true,
+    industryId: true,
+    industry: { select: { id: true, name: true } },
+    subIndustryId: true,
+    subIndustry: { select: { id: true, name: true } },
+    timezone: true,
+    language: true,
+    logo: true,
+    createdAt: true,
+    updatedAt: true,
+  } as const;
 
   async create(dto: CreateUserDto) {
-    return this.prisma.user.create({ data: dto });
+    return this.prisma.user.create({ data: dto, select: this.adminSelect });
   }
 
-  async findAll() {
-    return this.prisma.user.findMany({ include: { logo: true } });
+  async findAllForAdmin(opts: {
+    page: number;
+    limit: number;
+    search?: string;
+    role?: string;
+    status?: 'active' | 'suspended';
+  }) {
+    const { page, limit, search, role, status } = opts;
+    const skip = (page - 1) * limit;
+
+    const where: Record<string, any> = {};
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    if (role) where.role = role;
+    if (status === 'active') where.isActive = true;
+    if (status === 'suspended') where.isActive = false;
+
+    const [total, rows] = await Promise.all([
+      this.prisma.user.count({ where }),
+      this.prisma.user.findMany({
+        where,
+        select: this.adminSelect,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    return {
+      data: rows,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+    };
+  }
+
+  async findOneForAdmin(id: string) {
+    const user = await this.prisma.user.findUnique({ where: { id }, select: this.adminSelect });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async updateStatus(id: string, isActive: boolean, actor: AuditActor, ip?: string) {
+    const before = await this.findOne(id);
+    const updated = await this.prisma.user.update({ where: { id }, data: { isActive }, select: this.adminSelect });
+
+    this.auditLogService.log({
+      actor,
+      action: 'USER_STATUS_CHANGED',
+      targetType: 'User',
+      targetId: id,
+      before: { isActive: before.isActive },
+      after: { isActive: updated.isActive },
+      ip,
+    });
+
+    return updated;
   }
 
   async findOne(id: string) {
@@ -51,17 +142,43 @@ export class UserService {
     return { industry: subIndustry.industry, subIndustry: { ...subIndustry, industry: undefined } };
   }
 
-  async update(id: string, dto: UpdateUserDto) {
-    await this.findOne(id);
-    return this.prisma.user.update({ where: { id }, data: dto });
+  async update(id: string, dto: UpdateUserDto, actor: AuditActor, ip?: string) {
+    const before = await this.findOne(id);
+    const updated = await this.prisma.user.update({ where: { id }, data: dto, select: this.adminSelect });
+
+    if (dto.role !== undefined && dto.role !== before.role) {
+      this.auditLogService.log({
+        actor,
+        action: 'USER_ROLE_CHANGED',
+        targetType: 'User',
+        targetId: id,
+        before: { role: before.role },
+        after: { role: updated.role },
+        ip,
+      });
+    }
+
+    return updated;
   }
 
-  async remove(id: string) {
+  async remove(id: string, actor: AuditActor, ip?: string) {
     const user = await this.findOne(id);
     if (user.deleteFileUrl) {
       await this.imgbbService.deleteFile(user.deleteFileUrl);
     }
-    return this.prisma.user.delete({ where: { id } });
+    await this.prisma.user.delete({ where: { id } });
+
+    this.auditLogService.log({
+      actor,
+      action: 'USER_DELETED',
+      targetType: 'User',
+      targetId: id,
+      before: { id: user.id, name: user.name, email: user.email, role: user.role },
+      after: null,
+      ip,
+    });
+
+    return { success: true, id };
   }
 
   async updateProfilePhoto(id: string, file: Express.Multer.File) {

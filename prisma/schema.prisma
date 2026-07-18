@@ -33,6 +33,7 @@ model User {
   weeklyNotification Boolean        @default(true)
   linkedAccounts   LinkedAccount[]
   role             UserRole         @default(USER)
+  isActive         Boolean          @default(true)
   subscriptions    Subscription[]
   connectedSocials SocialPlatform[] @default([])
   jobTitle         String?
@@ -421,6 +422,25 @@ model RagDocument {
   updatedAt DateTime                     @updatedAt     @map("updated_at")
 
   @@map("rag_documents")
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorId     String
+  actorEmail  String
+  actorName   String?
+  action      String
+  targetType  String
+  targetId    String
+  before      Json?
+  after       Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([targetType, targetId])
   @@index([createdAt])
 }
 
