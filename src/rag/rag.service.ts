@@ -4,6 +4,11 @@ import { PrismaService } from '../lib/prisma.service'
 import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
 import { ChatQueryDto } from './dto/chat-query.dto'
+import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
+
+export interface AiUsageContext {
+  userId?: string | null
+}
 
 export interface RagDocument {
   id: string
@@ -64,15 +69,28 @@ const CHAT_MODEL = 'deepseek-chat'
 export class RagService {
   private readonly logger = new Logger(RagService.name)
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly aiUsageLogService: AiUsageLogService,
+  ) {}
 
-  async embedText(text: string): Promise<number[]> {
+  async embedText(text: string, context?: AiUsageContext): Promise<number[]> {
     try {
       const response = await openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: text,
         dimensions: 768,
       })
+
+      this.aiUsageLogService.logText({
+        userId: context?.userId,
+        provider: 'OPENAI',
+        model: 'text-embedding-3-small',
+        operation: 'EMBEDDING',
+        promptTokens: response.usage?.total_tokens ?? 0,
+        completionTokens: 0,
+      })
+
       const values = response.data[0]?.embedding
       if (!values || values.length === 0) throw new Error('Empty embedding returned')
       return values
@@ -81,9 +99,9 @@ export class RagService {
     }
   }
 
-  async indexDocument(dto: UploadDocumentDto): Promise<IndexResult> {
+  async indexDocument(dto: UploadDocumentDto, context?: AiUsageContext): Promise<IndexResult> {
     try {
-      const embedding = await this.embedText(dto.content)
+      const embedding = await this.embedText(dto.content, context)
       const vectorStr = `[${embedding.join(',')}]`
 
       const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
@@ -106,10 +124,10 @@ export class RagService {
     }
   }
 
-  async bulkIndexDocuments(dto: BulkUploadDto): Promise<BulkIndexResult> {
+  async bulkIndexDocuments(dto: BulkUploadDto, context?: AiUsageContext): Promise<BulkIndexResult> {
     const results: IndexResult[] = []
     for (const doc of dto.documents) {
-      results.push(await this.indexDocument(doc))
+      results.push(await this.indexDocument(doc, context))
     }
     const indexed = results.filter((r) => r.success).length
     const failed = results.filter((r) => !r.success).length
@@ -143,6 +161,16 @@ JSON only:
         messages: [{ role: 'user', content: prompt }],
         temperature: 0,
         max_tokens: 150,
+      })
+
+      this.aiUsageLogService.logText({
+        userId: null,
+        provider: 'DEEPSEEK',
+        model: CHAT_MODEL,
+        operation: 'CHAT',
+        promptTokens: completion.usage?.prompt_tokens ?? 0,
+        completionTokens: completion.usage?.completion_tokens ?? 0,
+        metadata: { step: 'query_rewrite' },
       })
 
       const raw = (completion.choices[0]?.message?.content ?? '').trim()
@@ -235,6 +263,16 @@ JSON only:
         max_tokens: 500,
       })
 
+      this.aiUsageLogService.logText({
+        userId: null,
+        provider: 'DEEPSEEK',
+        model: CHAT_MODEL,
+        operation: 'CHAT',
+        promptTokens: completion.usage?.prompt_tokens ?? 0,
+        completionTokens: completion.usage?.completion_tokens ?? 0,
+        metadata: { step: 'chat' },
+      })
+
       const raw = (completion.choices[0]?.message?.content ?? '').trim()
       const jsonMatch = raw.match(/\{[\s\S]*\}/)
       if (!jsonMatch) throw new Error('No JSON in DeepSeek response')
@@ -297,6 +335,7 @@ Rules:
       temperature: 0,
       max_tokens: 500,
       stream: true,
+      stream_options: { include_usage: true },
     })
 
     let fullAnswer = ''
@@ -305,6 +344,17 @@ Rules:
       if (text) {
         fullAnswer += text
         yield `data: ${JSON.stringify({ text })}\n\n`
+      }
+      if (chunk.usage) {
+        this.aiUsageLogService.logText({
+          userId: null,
+          provider: 'DEEPSEEK',
+          model: CHAT_MODEL,
+          operation: 'CHAT',
+          promptTokens: chunk.usage.prompt_tokens ?? 0,
+          completionTokens: chunk.usage.completion_tokens ?? 0,
+          metadata: { step: 'chat_stream' },
+        })
       }
     }
 
@@ -354,7 +404,7 @@ Rules:
     }
   }
 
-  async updateDocument(id: string, dto: { title?: string; content?: string; metadata?: Record<string, any> }) {
+  async updateDocument(id: string, dto: { title?: string; content?: string; metadata?: Record<string, any> }, context?: AiUsageContext) {
     const existing = await this.prisma.$queryRawUnsafe<Array<{ id: string; title: string; content: string; metadata: string }>>(
       `SELECT id::text, title, content, metadata::text FROM rag_documents WHERE id = $1::uuid`,
       id,
@@ -366,7 +416,7 @@ Rules:
     const newContent = dto.content ?? current.content
     const newMetadata = dto.metadata ?? (typeof current.metadata === 'string' ? JSON.parse(current.metadata) : current.metadata)
 
-    const embedding = await this.embedText(newContent)
+    const embedding = await this.embedText(newContent, context)
     const vectorStr = `[${embedding.join(',')}]`
 
     const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(

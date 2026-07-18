@@ -57,6 +57,11 @@ async login(@Body() dto: LoginDto) {
   return this.authService.login(dto.email, dto.password)
 }
 
+@Post('2fa/login-verify')
+async verifyTwoFactorLogin(@Body() body: { pendingToken: string; code: string }) {
+  return this.authService.verifyTwoFactorLogin(body.pendingToken, body.code)
+}
+
 @Post('refresh-token')
 async refresh(@Body() dto: RefreshTokenDto) {
   return this.authService.refreshToken(dto.refreshToken)

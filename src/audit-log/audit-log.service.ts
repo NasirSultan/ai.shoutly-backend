@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { prisma } from '../lib/prisma';
+import { CSV_EXPORT_ROW_LIMIT } from '../common/utils/csv.util';
 
 export interface AuditActor {
   id: string;
@@ -41,6 +42,21 @@ export class AuditLogService {
       .catch((err) => {
         console.error('[AuditLog] Failed to write audit log entry', err);
       });
+  }
+
+  async findAllForExport(opts: { action?: string; targetType?: string; actorEmail?: string }) {
+    const { action, targetType, actorEmail } = opts;
+
+    const where: Record<string, any> = {};
+    if (action) where.action = action;
+    if (targetType) where.targetType = targetType;
+    if (actorEmail) where.actorEmail = { contains: actorEmail, mode: 'insensitive' };
+
+    return this.prisma.auditLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: CSV_EXPORT_ROW_LIMIT,
+    });
   }
 
   async findAllForAdmin(opts: {

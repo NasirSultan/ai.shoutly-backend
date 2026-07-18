@@ -7,10 +7,12 @@ import {
   Body,
   Param,
   Query,
+  Req,
   Res,
   HttpCode,
   HttpStatus,
   ValidationPipe,
+  UseGuards,
 } from '@nestjs/common'
 import { Response } from 'express'
 import { RagService } from './rag.service'
@@ -18,6 +20,8 @@ import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
 import { ChatQueryDto } from './dto/chat-query.dto'
 import { UpdateDocumentDto } from './dto/update-document.dto'
+import { AuthGuard } from '../common/guards/auth.guard'
+import { RolesGuard } from '../common/guards/roles.guard'
 
 @Controller('rag')
 export class RagController {
@@ -25,12 +29,13 @@ export class RagController {
 
   /**
    * POST /rag/documents
-   * Index a document — embeds it with Gemini and stores in Supabase pgvector.
+   * Index a document — embeds it and stores in Supabase pgvector.
    */
   @Post('documents')
   @HttpCode(HttpStatus.CREATED)
-  indexDocument(@Body(ValidationPipe) dto: UploadDocumentDto) {
-    return this.ragService.indexDocument(dto)
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+  indexDocument(@Body(ValidationPipe) dto: UploadDocumentDto, @Req() req) {
+    return this.ragService.indexDocument(dto, { userId: req.user.id })
   }
 
   /**
@@ -40,8 +45,9 @@ export class RagController {
    */
   @Post('documents/bulk')
   @HttpCode(HttpStatus.OK)
-  bulkIndex(@Body(new ValidationPipe({ transform: true })) dto: BulkUploadDto) {
-    return this.ragService.bulkIndexDocuments(dto)
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+  bulkIndex(@Body(new ValidationPipe({ transform: true })) dto: BulkUploadDto, @Req() req) {
+    return this.ragService.bulkIndexDocuments(dto, { userId: req.user.id })
   }
 
   /**
@@ -67,8 +73,9 @@ export class RagController {
    * Update title, content, and/or metadata — re-generates embedding automatically.
    */
   @Patch('documents/:id')
-  updateDocument(@Param('id') id: string, @Body(ValidationPipe) dto: UpdateDocumentDto) {
-    return this.ragService.updateDocument(id, dto)
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+  updateDocument(@Param('id') id: string, @Body(ValidationPipe) dto: UpdateDocumentDto, @Req() req) {
+    return this.ragService.updateDocument(id, dto, { userId: req.user.id })
   }
 
   /**
@@ -76,6 +83,7 @@ export class RagController {
    * Remove a document from the vector store.
    */
   @Delete('documents/:id')
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   deleteDocument(@Param('id') id: string) {
     return this.ragService.deleteDocument(id)
   }

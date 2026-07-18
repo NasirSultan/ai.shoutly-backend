@@ -1,11 +1,16 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
+import { AiUsageLogService } from '../../../ai-usage/ai-usage-log.service';
+
+export interface AiUsageContext {
+  userId?: string | null;
+}
 
 @Injectable()
 export class GeminiService {
   private readonly ai: GoogleGenAI;
 
-  constructor() {
+  constructor(private readonly aiUsageLogService: AiUsageLogService) {
     this.ai = new GoogleGenAI({
       apiKey: process.env.GOOGLE_API_KEY,
     });
@@ -13,13 +18,24 @@ export class GeminiService {
 
 
 
-async generateText(prompt: string, retries = 3, delayMs = 2000): Promise<string> {
+async generateText(prompt: string, context?: AiUsageContext, retries = 3, delayMs = 2000): Promise<string> {
+  const model = 'gemini-2.5-flash';
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
       const result = await this.ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
       })
+
+      this.aiUsageLogService.logText({
+        userId: context?.userId,
+        provider: 'GEMINI',
+        model,
+        operation: 'TEXT_GENERATION',
+        promptTokens: result.usageMetadata?.promptTokenCount ?? 0,
+        completionTokens: result.usageMetadata?.candidatesTokenCount ?? 0,
+      });
+
       return result.text ?? ''
     } catch (error: any) {
       const message = this.extractErrorMessage(error)
@@ -42,10 +58,11 @@ async generateText(prompt: string, retries = 3, delayMs = 2000): Promise<string>
   throw new InternalServerErrorException('Gemini Error: Max retries exceeded')
 }
 
-async generateImages(prompt: string): Promise<string[]> {
+async generateImages(prompt: string, context?: AiUsageContext): Promise<string[]> {
+  const model = 'gemini-2.5-flash-image';
   try {
     const result = await this.ai.models.generateContent({
-model: 'gemini-2.5-flash-image',
+model,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: {
         responseModalities: ['TEXT', 'IMAGE'],
@@ -58,6 +75,14 @@ model: 'gemini-2.5-flash-image',
       if (part.inlineData?.data) {
         images.push(part.inlineData.data);
       }
+    }
+
+    if (images.length > 0) {
+      this.aiUsageLogService.logImage({
+        userId: context?.userId,
+        model,
+        imageCount: images.length,
+      });
     }
 
     return images;

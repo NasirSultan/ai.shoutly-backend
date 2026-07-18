@@ -7,16 +7,20 @@ import { RedisModule } from '../common/redis/redis.module'
 import { BrevoModule } from 'src/brevo/brevo.module'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { GoogleModule } from './google/google.module'
+import { TwoFactorModule } from './two-factor/two-factor.module'
+import { AuditLogModule } from '../audit-log/audit-log.module'
 
 @Module({
   imports: [PrismaModule,
     JwtLibModule,
     RedisModule,
     BrevoModule,
-    GoogleModule
+    GoogleModule,
+    TwoFactorModule,
+    AuditLogModule
   ],
   providers: [AuthService, ImgbbService],
   controllers: [AuthController],
-    exports: [JwtLibModule] 
+    exports: [JwtLibModule]
 })
 export class AuthModule {}

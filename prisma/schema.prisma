@@ -34,6 +34,8 @@ model User {
   linkedAccounts   LinkedAccount[]
   role             UserRole         @default(USER)
   isActive         Boolean          @default(true)
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean          @default(false)
   subscriptions    Subscription[]
   connectedSocials SocialPlatform[] @default([])
   jobTitle         String?
@@ -441,6 +443,39 @@ model AuditLog {
   @@index([actorId])
   @@index([action])
   @@index([targetType, targetId])
+  @@index([createdAt])
+}
+
+enum AiProvider {
+  GEMINI
+  DEEPSEEK
+  OPENAI
+}
+
+enum AiOperation {
+  TEXT_GENERATION
+  IMAGE_GENERATION
+  EMBEDDING
+  CHAT
+}
+
+model AiUsageLog {
+  id              String      @id @default(uuid())
+  userId          String?
+  provider        AiProvider
+  model           String
+  operation       AiOperation
+  promptTokens    Int?
+  completionTokens Int?
+  totalTokens     Int?
+  imageCount      Int?
+  estimatedCostUsd Float
+  metadata        Json?
+  createdAt       DateTime    @default(now())
+
+  @@index([userId])
+  @@index([provider])
+  @@index([operation])
   @@index([createdAt])
 }
 

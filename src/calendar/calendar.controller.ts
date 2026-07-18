@@ -4,11 +4,13 @@ import { AuthGuard } from '../common/guards/auth.guard'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { Express } from 'express'
+import { AuditLogService } from '../audit-log/audit-log.service'
 
 @Controller('calendar')
 export class CalendarController {
   constructor(private readonly calendarService: CalendarService,
-        private readonly imgbbService: ImgbbService
+        private readonly imgbbService: ImgbbService,
+        private readonly auditLogService: AuditLogService
   ) {}
 
   @UseGuards(AuthGuard)
@@ -19,7 +21,16 @@ export class CalendarController {
   ) {
     const userId = req.user.id
 
-    return await this.calendarService.generatePlan(userId, body.postTime)
+    const result = await this.calendarService.generatePlan(userId, body.postTime)
+
+    this.auditLogService.log({
+      actor: { id: userId, email: req.user.email },
+      action: 'CALENDAR_PLAN_GENERATED',
+      targetType: 'User',
+      targetId: userId,
+    })
+
+    return result
   }
 
 // calendar.controller.ts
@@ -62,7 +73,16 @@ async updateCalendarPost(
     imageData = await this.imgbbService.uploadFile(file)
   }
 
-  return await this.calendarService.updatePost(userId, postId, body, imageData)
+  const result = await this.calendarService.updatePost(userId, postId, body, imageData)
+
+  this.auditLogService.log({
+    actor: { id: userId, email: req.user.email },
+    action: 'CALENDAR_POST_UPDATED',
+    targetType: 'CalendarPost',
+    targetId: postId,
+  })
+
+  return result
 }
 
 @Post('post')
@@ -86,18 +106,36 @@ async createPost(
     imageData = await this.imgbbService.uploadFile(file)
   }
 
-  return await this.calendarService.createPost(
+  const result = await this.calendarService.createPost(
     userId,
     body,
     imageData
   )
+
+  this.auditLogService.log({
+    actor: { id: userId, email: req.user.email },
+    action: 'CALENDAR_POST_CREATED',
+    targetType: 'CalendarPost',
+    targetId: result?.post?.postId ?? '',
+  })
+
+  return result
 }
 
 @UseGuards(AuthGuard)
 @Post('post/:postId/publish')
 async publishNow(@Req() req, @Param('postId') postId: string) {
   const userId = req.user.id
-  return await this.calendarService.publishNow(userId, postId)
+  const result = await this.calendarService.publishNow(userId, postId)
+
+  this.auditLogService.log({
+    actor: { id: userId, email: req.user.email },
+    action: 'CALENDAR_POST_PUBLISHED',
+    targetType: 'CalendarPost',
+    targetId: postId,
+  })
+
+  return result
 }
 
 // User-only "manual" post endpoints — separate from POST/PATCH /calendar/post
@@ -120,7 +158,17 @@ async createManualPost(
     imageData = await this.imgbbService.uploadFile(file)
   }
 
-  return await this.calendarService.createManualPost(userId, body, imageData)
+  const result = await this.calendarService.createManualPost(userId, body, imageData)
+
+  this.auditLogService.log({
+    actor: { id: userId, email: req.user.email },
+    action: 'CALENDAR_POST_CREATED',
+    targetType: 'CalendarPost',
+    targetId: result?.post?.postId ?? '',
+    after: { manual: true },
+  })
+
+  return result
 }
 
 @UseGuards(AuthGuard)
@@ -141,7 +189,17 @@ async updateManualPost(
     imageData = await this.imgbbService.uploadFile(file)
   }
 
-  return await this.calendarService.updateManualPost(userId, postId, body, imageData)
+  const result = await this.calendarService.updateManualPost(userId, postId, body, imageData)
+
+  this.auditLogService.log({
+    actor: { id: userId, email: req.user.email },
+    action: 'CALENDAR_POST_UPDATED',
+    targetType: 'CalendarPost',
+    targetId: postId,
+    after: { manual: true },
+  })
+
+  return result
 }
 
 }

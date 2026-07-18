@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, NotFoundException } from "@nestjs/comm
 import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
 import { prisma } from "../lib/prisma";
+import { CSV_EXPORT_ROW_LIMIT } from "../common/utils/csv.util";
 
 @Injectable()
 export class SubscriptionService {
@@ -157,6 +158,48 @@ export class SubscriptionService {
         totalPages: Math.ceil(filteredTotal / limit) || 1,
       },
     };
+  }
+
+  async getAllPaymentsForExport(opts: {
+    search?: string;
+    status?: "active" | "expired" | "trial";
+    plan?: string;
+  }) {
+    const { search, status, plan } = opts;
+
+    const where: Record<string, any> = {};
+    if (search) {
+      where.user = {
+        OR: [
+          { name: { contains: search, mode: "insensitive" } },
+          { email: { contains: search, mode: "insensitive" } },
+        ],
+      };
+    }
+    if (status === "active") where.isActive = true;
+    if (status === "expired") where.isActive = false;
+    if (status === "trial") where.isTrial = true;
+    if (plan) where.plan = plan;
+
+    const rows = await prisma.subscription.findMany({
+      where,
+      include: { user: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: "desc" },
+      take: CSV_EXPORT_ROW_LIMIT,
+    });
+
+    return rows.map((r) => ({
+      transactionId: r.id,
+      user: r.user,
+      plan: r.plan,
+      billing: r.billing,
+      amount: r.amount,
+      currency: r.currency,
+      isActive: r.isActive,
+      isTrial: r.isTrial,
+      startedAt: r.startedAt,
+      expiresAt: r.expiresAt,
+    }));
   }
 
   async getUserPaymentDetailForAdmin(userId: string) {

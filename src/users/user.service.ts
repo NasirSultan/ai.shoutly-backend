@@ -7,6 +7,7 @@ import { UpdatePasswordDto } from './dto/update-password.dto';
 import * as bcrypt from 'bcrypt';
 import { prisma } from '../lib/prisma';
 import { AuditLogService, AuditActor } from '../audit-log/audit-log.service';
+import { CSV_EXPORT_ROW_LIMIT } from '../common/utils/csv.util';
 @Injectable()
 export class UserService {
   private prisma = prisma;
@@ -86,6 +87,28 @@ export class UserService {
         totalPages: Math.ceil(total / limit) || 1,
       },
     };
+  }
+
+  async findAllForExport(opts: { search?: string; role?: string; status?: 'active' | 'suspended' }) {
+    const { search, role, status } = opts;
+
+    const where: Record<string, any> = {};
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    if (role) where.role = role;
+    if (status === 'active') where.isActive = true;
+    if (status === 'suspended') where.isActive = false;
+
+    return this.prisma.user.findMany({
+      where,
+      select: this.adminSelect,
+      orderBy: { createdAt: 'desc' },
+      take: CSV_EXPORT_ROW_LIMIT,
+    });
   }
 
   async findOneForAdmin(id: string) {

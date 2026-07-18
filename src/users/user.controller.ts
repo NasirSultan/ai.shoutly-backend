@@ -1,5 +1,6 @@
-import { Body, Controller, Delete, Get,UseGuards, Param, Patch, Post,Query,Req, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get,UseGuards, Param, Patch, Post,Query,Req,Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Response } from 'express';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -9,6 +10,7 @@ import { SelectSubIndustryDto } from './dto/select-sub-industry.dto';
 import { Express } from 'express'
 import { AuthGuard } from '../common/guards/auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { toCsv } from '../common/utils/csv.util';
 
 @Controller('users')
 export class UserController {
@@ -36,6 +38,36 @@ export class UserController {
       role,
       status,
     });
+  }
+
+  @Get('export')
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+  async exportCsv(
+    @Query('search') search: string | undefined,
+    @Query('role') role: string | undefined,
+    @Query('status') status: 'active' | 'suspended' | undefined,
+    @Res() res: Response,
+  ) {
+    const rows = await this.userService.findAllForExport({
+      search: search?.trim() || undefined,
+      role,
+      status,
+    });
+    const csv = toCsv(rows, [
+      { key: 'id', header: 'ID' },
+      { key: 'name', header: 'Name' },
+      { key: 'email', header: 'Email' },
+      { key: 'phone', header: 'Phone' },
+      { key: 'role', header: 'Role' },
+      { key: 'isActive', header: 'Status', value: (r) => (r.isActive ? 'Active' : 'Suspended') },
+      { key: 'brandName', header: 'Brand' },
+      { key: 'industry', header: 'Industry', value: (r) => r.industry?.name },
+      { key: 'subIndustry', header: 'Sub-Industry', value: (r) => r.subIndustry?.name },
+      { key: 'createdAt', header: 'Joined', value: (r) => new Date(r.createdAt).toISOString() },
+    ]);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="users.csv"');
+    res.send(csv);
   }
 
     @Patch('profile-update')

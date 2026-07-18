@@ -291,12 +291,13 @@
 // geminiimage.service.ts
 
 import { Injectable, InternalServerErrorException } from '@nestjs/common'
-import { GeminiService } from '../lib/llm/geminillm/gemini.service'
+import { GeminiService, AiUsageContext } from '../lib/llm/geminillm/gemini.service'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { buildPostImagePrompt,buildUserTextPrompt, buildPostTextPrompt } from '../lib/prompt/post.prompt'
 import { Express } from 'express'
 import OpenAI from 'openai'
 import { prisma } from '../lib/prisma'
+import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 
 const deepseek = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
@@ -351,7 +352,8 @@ const DB_DELAY_MS = 3000
 export class PostGeneratorService {
   constructor(
     private readonly geminiService: GeminiService,
-    private readonly imgbbService: ImgbbService
+    private readonly imgbbService: ImgbbService,
+    private readonly aiUsageLogService: AiUsageLogService
   ) {}
 
   async generateMixedPosts(
@@ -405,6 +407,14 @@ export class PostGeneratorService {
       )
 
       completions.forEach((completion, j) => {
+        this.aiUsageLogService.logText({
+          userId: null,
+          provider: 'DEEPSEEK',
+          model: 'deepseek-chat',
+          operation: 'TEXT_GENERATION',
+          promptTokens: completion.usage?.prompt_tokens ?? 0,
+          completionTokens: completion.usage?.completion_tokens ?? 0,
+        })
         const raw = completion.choices[0]?.message?.content?.trim() ?? ''
         const { text, hashtags } = this.parseTextResult(raw)
         posts.push({
@@ -432,7 +442,8 @@ export class PostGeneratorService {
     postTime: Date,
     onPost: OnPost
   ): Promise<void> {
-    const mode = await this.resolveMode(industryId, subIndustryId, userPrompt)
+    const usageContext: AiUsageContext = { userId }
+    const mode = await this.resolveMode(industryId, subIndustryId, userPrompt, usageContext)
 
     if (mode.type === 'LLM_ONLY') {
       await this.streamLLMOnlyAndSave(
@@ -449,8 +460,8 @@ export class PostGeneratorService {
 
     const { industry, subIndustry, dbImages, textResults } = mode.data
 
-    const llm1Promise = this.generateAndUploadLLMImage(industry.name, subIndustry.name, userPrompt, 1)
-    const llm2Promise = this.generateAndUploadLLMImage(industry.name, subIndustry.name, userPrompt, 2)
+    const llm1Promise = this.generateAndUploadLLMImage(industry.name, subIndustry.name, userPrompt, 1, usageContext)
+    const llm2Promise = this.generateAndUploadLLMImage(industry.name, subIndustry.name, userPrompt, 2, usageContext)
 
     const streamOrder: Array<{ type: 'DB'; dbIndex: number } | { type: 'LLM'; llmSlot: 1 | 2 }> = [
       { type: 'DB',  dbIndex: 0 },
@@ -540,7 +551,8 @@ export class PostGeneratorService {
   private async resolveMode(
     industryId: string | undefined,
     subIndustryId: string | undefined,
-    userPrompt: string
+    userPrompt: string,
+    usageContext?: AiUsageContext
   ): Promise<ResolvedMode> {
     if (!industryId || !subIndustryId) {
       return { type: 'LLM_ONLY', context: 'general', industry: '', subIndustry: '' }
@@ -570,7 +582,7 @@ export class PostGeneratorService {
       }
     }
 
-    const data = await this.resolveBaseData(industry, subIndustry, dbImages, userPrompt)
+    const data = await this.resolveBaseData(industry, subIndustry, dbImages, userPrompt, usageContext)
     return { type: 'MIXED', data }
   }
 
@@ -580,7 +592,8 @@ private async resolveBaseData(
   industry: { id: string; name: string },
   subIndustry: { id: string; name: string },
   dbImages: any[],
-  userPrompt: string
+  userPrompt: string,
+  usageContext?: AiUsageContext
 ): Promise<BaseData> {
   // Batch into groups of 2 with delay between batches to avoid rate limit
   const textRaws: string[] = []
@@ -596,7 +609,8 @@ private async resolveBaseData(
             industry.name,
             subIndustry.name,
             `${userPrompt} (variation ${i + j + 1})`
-          )
+          ),
+          usageContext
         )
     )
     const results = await Promise.all(batch)
@@ -653,15 +667,18 @@ private async resolveBaseData(
     subIndustryName: string,
     onPost: OnPost
   ): Promise<void> {
+    const usageContext: AiUsageContext = { userId }
     const [textRaw1, textRaw2, llmImage1, llmImage2] = await Promise.all([
       this.geminiService.generateText(
-        buildPostTextPrompt(industryName, subIndustryName, `${userPrompt} (variation 1)`)
+        buildPostTextPrompt(industryName, subIndustryName, `${userPrompt} (variation 1)`),
+        usageContext
       ),
       this.geminiService.generateText(
-        buildPostTextPrompt(industryName, subIndustryName, `${userPrompt} (variation 2)`)
+        buildPostTextPrompt(industryName, subIndustryName, `${userPrompt} (variation 2)`),
+        usageContext
       ),
-      this.generateAndUploadLLMImage(industryName, subIndustryName, userPrompt, 1),
-      this.generateAndUploadLLMImage(industryName, subIndustryName, userPrompt, 2),
+      this.generateAndUploadLLMImage(industryName, subIndustryName, userPrompt, 1, usageContext),
+      this.generateAndUploadLLMImage(industryName, subIndustryName, userPrompt, 2, usageContext),
     ])
 
     const results: TextResult[] = [
@@ -722,10 +739,12 @@ private async resolveBaseData(
     industryName: string,
     subIndustryName: string,
     userPrompt: string,
-    variation: number
+    variation: number,
+    usageContext?: AiUsageContext
   ): Promise<{ imageUrl: string; deleteUrl: string }> {
     const base64Images = await this.geminiService.generateImages(
-      buildPostImagePrompt(industryName, subIndustryName, userPrompt, variation)
+      buildPostImagePrompt(industryName, subIndustryName, userPrompt, variation),
+      usageContext
     )
     return this.uploadBase64Image(base64Images, `post_image_${variation}.png`)
   }
@@ -775,6 +794,16 @@ async generateTextStreamed(
     model: 'deepseek-chat',
     messages: [{ role: 'user', content: prompt }],
   })
+
+  this.aiUsageLogService.logText({
+    userId: null,
+    provider: 'DEEPSEEK',
+    model: 'deepseek-chat',
+    operation: 'TEXT_GENERATION',
+    promptTokens: completion.usage?.prompt_tokens ?? 0,
+    completionTokens: completion.usage?.completion_tokens ?? 0,
+  })
+
   const text = completion.choices[0]?.message?.content?.trim() ?? ''
   onPost({ text })
 }

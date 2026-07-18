@@ -1,10 +1,10 @@
 import { Module } from '@nestjs/common';
 import { AuditLogService } from './audit-log.service';
 import { AuditLogController } from './audit-log.controller';
-import { AuthModule } from '../auth/auth.module';
+import { JwtLibModule } from '../lib/jwt/jwt.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [JwtLibModule],
   controllers: [AuditLogController],
   providers: [AuditLogService],
   exports: [AuditLogService],
