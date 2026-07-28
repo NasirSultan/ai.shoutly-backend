@@ -1,6 +1,7 @@
 import { Controller, Post, Req, Get,UseGuards,Param, UseInterceptors,Patch, UploadedFile, Body } from '@nestjs/common'
 import { CalendarService } from './calendar.service'
 import { AuthGuard } from '../common/guards/auth.guard'
+import { RolesGuard } from '../common/guards/roles.guard'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { Express } from 'express'
@@ -38,6 +39,14 @@ export class CalendarController {
 @Get('plan')
 async getUserPlan(@Req() req) {
   const userId = req.user.id
+  return await this.calendarService.getPlanByUser(userId)
+}
+
+// Admin variant of GET /calendar/plan — fetches the current calendar plan
+// for any user by userId instead of the caller's own token.
+@UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+@Get('admin/:userId/plan')
+async getUserPlanForAdmin(@Param('userId') userId: string) {
   return await this.calendarService.getPlanByUser(userId)
 }
 
