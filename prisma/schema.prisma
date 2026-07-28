@@ -486,3 +486,21 @@ model NewsletterSubscriber {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+enum IndustryRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model IndustryRequest {
+  id           String                @id @default(uuid())
+  industryName String
+  email        String
+  status       IndustryRequestStatus @default(PENDING)
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@index([email])
+  @@index([status])
+}

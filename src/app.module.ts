@@ -24,6 +24,7 @@ import { NewsletterModule } from './newsletter/newsletter.module'
 import { AuditLogModule } from './audit-log/audit-log.module'
 import { AiUsageLogModule } from './ai-usage/ai-usage-log.module'
 import { AdminDashboardModule } from './admin-dashboard/admin-dashboard.module'
+import { IndustryRequestsModule } from './industry-requests/industry-requests.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -47,6 +48,7 @@ import { AdminDashboardModule } from './admin-dashboard/admin-dashboard.module'
   AuditLogModule,
   AiUsageLogModule,
   AdminDashboardModule,
+  IndustryRequestsModule,
 ],
   controllers: [AppController],
   providers: [AppService],
