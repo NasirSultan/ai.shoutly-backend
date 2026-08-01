@@ -40,6 +40,7 @@ export class FestivalsController {
     @Query('year') year?: string,
     @Query('search') search?: string,
     @Query('upcoming') upcoming?: string,
+    @Query('country') country?: string,
   ) {
     return this.festivalsService.findAll({
       page: Math.max(1, parseInt(page) || 1),
@@ -49,6 +50,7 @@ export class FestivalsController {
       year: year ? parseInt(year) : undefined,
       search: search?.trim() || undefined,
       upcoming: upcoming === 'true',
+      country: country?.trim() || undefined,
     })
   }
 

@@ -13,4 +13,8 @@ export class UpdateFestivalDto {
   @IsOptional()
   @IsEnum(FestivalType)
   type?: FestivalType
+
+  @IsOptional()
+  @IsString()
+  country?: string
 }

@@ -1,4 +1,4 @@
-import { IsDateString, IsEnum, IsString, IsNotEmpty } from 'class-validator'
+import { IsDateString, IsEnum, IsString, IsNotEmpty, IsOptional } from 'class-validator'
 import { FestivalType } from '@prisma/client'
 
 export class CreateFestivalDto {
@@ -11,4 +11,8 @@ export class CreateFestivalDto {
 
   @IsEnum(FestivalType)
   type: FestivalType
+
+  @IsOptional()
+  @IsString()
+  country?: string
 }

@@ -367,6 +367,7 @@ enum FestivalType {
   SPECIAL_DAY
   FESTIVAL
   NATIONAL
+  RELIGIOUS
 }
 
 model ContactForm {
@@ -385,12 +386,14 @@ model Festival {
   date      DateTime
   event     String
   type      FestivalType
+  country   String?
   images    FestivalImage[]
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
 
   @@index([date])
   @@index([type])
+  @@index([country])
 }
 
 model FestivalImage {

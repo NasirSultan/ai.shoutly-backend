@@ -12,6 +12,7 @@ export class FestivalsService {
         date: new Date(dto.date),
         event: dto.event,
         type: dto.type,
+        country: dto.country,
       },
     })
   }
@@ -21,6 +22,7 @@ export class FestivalsService {
       date: new Date(dto.date),
       event: dto.event,
       type: dto.type,
+      country: dto.country,
     }))
     await prisma.festival.createMany({ data, skipDuplicates: true })
     return { created: data.length }
@@ -34,13 +36,15 @@ export class FestivalsService {
     year?: number
     search?: string
     upcoming?: boolean
+    country?: string
   }) {
-    const { page, limit, type, month, year, search, upcoming } = opts
+    const { page, limit, type, month, year, search, upcoming, country } = opts
     const offset = (page - 1) * limit
 
     const where: any = {}
 
     if (type) where.type = type
+    if (country) where.country = country
     if (search) where.event = { contains: search, mode: 'insensitive' }
     if (upcoming) where.date = { gte: new Date() }
 
@@ -69,11 +73,17 @@ export class FestivalsService {
         orderBy: { date: 'asc' },
         skip: offset,
         take: limit,
+        include: {
+          _count: { select: { images: { where: { deletedAt: null } } } },
+        },
       }),
     ])
 
     return {
-      data,
+      data: data.map(({ _count, ...festival }) => ({
+        ...festival,
+        imageCount: _count.images,
+      })),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     }
   }
@@ -110,6 +120,7 @@ export class FestivalsService {
         ...(dto.date && { date: new Date(dto.date) }),
         ...(dto.event && { event: dto.event }),
         ...(dto.type && { type: dto.type }),
+        ...(dto.country !== undefined && { country: dto.country }),
       },
     })
   }
