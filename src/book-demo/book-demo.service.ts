@@ -59,12 +59,11 @@ export class BookDemoService {
     })
     const takenTimes = new Set(existing.map((b) => b.slotTime.toISOString()))
 
-    return allSlots
-      .filter((slot) => !takenTimes.has(slot.toUTC().toJSDate().toISOString()))
-      .map((slot) => ({
-        slotTime: slot.toUTC().toISO(),
-        display: `${slot.toFormat('cccc, dd LLL yyyy, hh:mm a')} IST`,
-      }))
+    return allSlots.map((slot) => ({
+      slotTime: slot.toUTC().toISO(),
+      display: `${slot.toFormat('cccc, dd LLL yyyy, hh:mm a')} IST`,
+      booked: takenTimes.has(slot.toUTC().toJSDate().toISOString()),
+    }))
   }
 
   async create(dto: CreateBookDemoDto) {
@@ -154,6 +153,14 @@ export class BookDemoService {
   async updateStatus(id: string, dto: UpdateBookDemoStatusDto) {
     const booking = await prisma.demoBooking.findUnique({ where: { id } })
     if (!booking) throw new NotFoundException(`Demo booking ${id} not found`)
+
+    // Rejecting frees the slot for someone else to book — the unique
+    // constraint on slotTime means a CANCELLED row left in place would
+    // otherwise block that time forever, so the row is removed instead.
+    if (dto.status === DemoBookingStatus.CANCELLED) {
+      await prisma.demoBooking.delete({ where: { id } })
+      return { message: 'Demo booking rejected and slot reopened', id }
+    }
 
     return prisma.demoBooking.update({
       where: { id },
