@@ -504,3 +504,26 @@ model IndustryRequest {
   @@index([email])
   @@index([status])
 }
+
+enum DemoBookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+model DemoBooking {
+  id           String            @id @default(uuid())
+  fullName     String
+  businessName String
+  email        String
+  phone        String?
+  slotTime     DateTime          @unique
+  message      String?
+  status       DemoBookingStatus @default(PENDING)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([slotTime])
+}
