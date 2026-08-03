@@ -88,7 +88,7 @@ export class FestivalsService {
     }
   }
 
-  async findRandomWithImages(count = 7) {
+  async findRandomWithImages(count = 4) {
     return prisma.$queryRaw<
       Array<{ id: string; name: string; date: Date; pic: string }>
     >`

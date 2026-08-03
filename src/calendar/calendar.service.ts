@@ -149,7 +149,7 @@ export class CalendarService {
           contentId: content.id,
           reelId: null,
           imageId: null,
-          imageUrl: image.driveUrl || image.file,
+          imageUrl: image.file || image.driveUrl,
           status: 'SCHEDULED' as const,
           postTime: days[i],
           subIndustryId,
