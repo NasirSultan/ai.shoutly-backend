@@ -37,7 +37,7 @@ export class CalendarService {
           }
         : null,
       media: post.imageUrl
-        ? { type: 'IMAGE', id: post.imageId, file: post.imageUrl }
+        ? { type: post.type === 'FESTIVAL' ? 'FESTIVAL' : 'IMAGE', id: post.imageId, file: post.imageUrl }
         : post.image
         ? { type: 'IMAGE', id: post.image.id, file: post.image.file }
         : post.reel
@@ -93,6 +93,69 @@ export class CalendarService {
 
     this.reservedSubIndustryId = subIndustry.id
     return subIndustry.id
+  }
+
+  private toHashtag(name: string): string {
+    return name.replace(/[^a-zA-Z0-9]+/g, '')
+  }
+
+  // Turns the festival days picked out in generatePlan into MonthlyPost-shaped
+  // rows: a Content row carrying the festival's name (tagged to the reserved
+  // sub-industry, same as manual posts, so it can't leak into another user's
+  // random draw) plus one of the festival's images picked at random. Every
+  // festival post gets a default #Festival tag plus one derived from its name
+  // (e.g. "Youth Day" -> #YouthDay).
+  private async buildFestivalPosts(
+    indexes: number[],
+    days: Date[],
+    dateKeys: string[],
+    festivalByDate: Map<string, { event: string; images: { file: string; driveUrl: string | null }[] }>,
+    subIndustryId: string,
+  ) {
+    if (!indexes.length) return []
+
+    const reservedSubIndustryId = await this.getReservedSubIndustryId()
+
+    // Dedupe tags across all festival days first so the upserts below never
+    // race each other on the same unique `tag` value.
+    const tags = new Set<string>(['Festival'])
+    for (const i of indexes) tags.add(this.toHashtag(festivalByDate.get(dateKeys[i])!.event))
+
+    const hashtags = await Promise.all(
+      [...tags].map(tag =>
+        prisma.hashtag.upsert({ where: { tag }, update: {}, create: { tag } }),
+      ),
+    )
+    const hashtagIdByTag = new Map(hashtags.map(h => [h.tag, h.id]))
+
+    return Promise.all(
+      indexes.map(async i => {
+        const festival = festivalByDate.get(dateKeys[i])!
+        const image = festival.images[Math.floor(Math.random() * festival.images.length)]
+        const eventTag = this.toHashtag(festival.event)
+
+        const content = await prisma.content.create({
+          data: { text: festival.event, subIndustryId: reservedSubIndustryId },
+        })
+
+        await prisma.contentHashtag.createMany({
+          data: [hashtagIdByTag.get(eventTag)!, hashtagIdByTag.get('Festival')!]
+            .filter((hashtagId, idx, arr) => arr.indexOf(hashtagId) === idx)
+            .map(hashtagId => ({ contentId: content.id, hashtagId })),
+        })
+
+        return {
+          type: 'FESTIVAL' as const,
+          contentId: content.id,
+          reelId: null,
+          imageId: null,
+          imageUrl: image.driveUrl || image.file,
+          status: 'SCHEDULED' as const,
+          postTime: days[i],
+          subIndustryId,
+        }
+      }),
+    )
   }
 
   // Keeps the most-recently-created post per calendar day for this user and deletes
@@ -159,19 +222,59 @@ export class CalendarService {
       return localDay
     })
 
+    // Each day's calendar date in the user's own timezone — festival matching
+    // is judged by the user's local date, not the UTC instant it's scheduled at.
+    const dateKeys = days.map(d => DateTime.fromJSDate(d).setZone(userTz).toISODate()!)
+
     // Clear today onward — preserve only yesterday and earlier (already posted/handled).
     // Using the exact current instant here (instead of start-of-day) would leave today's
     // already-passed post un-deleted while still generating a fresh post for today too.
-    // Runs alongside generatePostsForMonth — neither depends on the other's result.
+    // Runs alongside the festival lookup and generatePostsForMonth — none depend on
+    // each other's result.
     const todayStart = DateTime.now().setZone(userTz).startOf('day').toUTC().toJSDate()
-    const [, generatedPosts] = await Promise.all([
+    const [, festivals] = await Promise.all([
       prisma.calendarPost.deleteMany({
         where: { userId, postTime: { gte: todayStart } },
       }),
-      generatePostsForMonth(prisma, userId, days, [user.subIndustryId]),
+      prisma.festival.findMany({
+        where: {
+          type: 'GLOBAL',
+          date: {
+            gte: new Date(`${dateKeys[0]}T00:00:00.000Z`),
+            lte: new Date(`${dateKeys[dateKeys.length - 1]}T00:00:00.000Z`),
+          },
+        },
+        include: { images: { where: { deletedAt: null } } },
+      }),
     ])
 
-    if (!generatedPosts.length) {
+    // Only festivals that actually have images qualify to replace a normal post.
+    // If more than one lands on the same date, keep one at random.
+    const festivalByDate = new Map<string, (typeof festivals)[number]>()
+    for (const festival of festivals) {
+      if (!festival.images.length) continue
+      const key = festival.date.toISOString().slice(0, 10)
+      if (!festivalByDate.has(key) || Math.random() < 0.5) {
+        festivalByDate.set(key, festival)
+      }
+    }
+
+    const festivalDayIndexes: number[] = []
+    dateKeys.forEach((key, i) => {
+      if (festivalByDate.has(key)) festivalDayIndexes.push(i)
+    })
+    const nonFestivalDays = days.filter((_, i) => !festivalByDate.has(dateKeys[i]))
+
+    const [generatedPosts, festivalPosts] = await Promise.all([
+      generatePostsForMonth(prisma, userId, nonFestivalDays, [user.subIndustryId]),
+      this.buildFestivalPosts(festivalDayIndexes, days, dateKeys, festivalByDate, user.subIndustryId),
+    ])
+
+    const allPosts = [...generatedPosts, ...festivalPosts].sort(
+      (a, b) => a.postTime.getTime() - b.postTime.getTime(),
+    )
+
+    if (!allPosts.length) {
       return {
         success: false,
         message: 'No posts available',
@@ -180,13 +283,14 @@ export class CalendarService {
 
     // IDs are generated here (instead of letting Postgres default them) so the whole
     // batch can go in with one createMany() round trip instead of 31 individual creates.
-    const rows = generatedPosts.map(post => ({
+    const rows = allPosts.map(post => ({
       id: randomUUID(),
       userId,
       subIndustryId: post.subIndustryId,
       contentId: post.contentId,
       reelId: post.reelId,
       imageId: post.imageId,
+      imageUrl: post.imageUrl ?? '',
       type: post.type,
       postTime: post.postTime, // already UTC from days array
       status: post.status,

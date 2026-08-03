@@ -88,6 +88,24 @@ export class FestivalsService {
     }
   }
 
+  async findRandomWithImages(count = 7) {
+    return prisma.$queryRaw<
+      Array<{ id: string; name: string; date: Date; pic: string }>
+    >`
+      SELECT f.id, f.event AS name, f.date, fi.file AS pic
+      FROM "Festival" f
+      JOIN LATERAL (
+        SELECT file
+        FROM "FestivalImage" fi2
+        WHERE fi2."festivalId" = f.id AND fi2."deletedAt" IS NULL
+        ORDER BY fi2."createdAt" DESC
+        LIMIT 1
+      ) fi ON true
+      ORDER BY RANDOM()
+      LIMIT ${count}
+    `
+  }
+
   async findToday() {
     const now = new Date()
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())

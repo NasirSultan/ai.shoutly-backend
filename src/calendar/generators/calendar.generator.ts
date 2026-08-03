@@ -1,10 +1,11 @@
 import { PrismaClient } from '@prisma/client'
 
 type MonthlyPost = {
-  type: 'REEL' | 'IMAGE'
+  type: 'REEL' | 'IMAGE' | 'FESTIVAL'
   contentId: string | null
   reelId: string | null
   imageId: string | null
+  imageUrl: string | null
   status: 'SCHEDULED' | 'SKIP' | 'POSTED'
   postTime: Date
   subIndustryId: string
@@ -94,6 +95,7 @@ export async function generatePostsForMonth(
       type,
       reelId,
       imageId,
+      imageUrl: null,
       contentId,
       subIndustryId,
       status: 'SCHEDULED',

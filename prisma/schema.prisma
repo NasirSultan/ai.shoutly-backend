@@ -108,6 +108,7 @@ enum Currency {
 enum PostType {
   REEL
   IMAGE
+  FESTIVAL
 }
 
 enum PostStatus {

@@ -54,6 +54,11 @@ export class FestivalsController {
     })
   }
 
+  @Get('random')
+  findRandom() {
+    return this.festivalsService.findRandomWithImages()
+  }
+
   @Get('today')
   findToday() {
     return this.festivalsService.findToday()
