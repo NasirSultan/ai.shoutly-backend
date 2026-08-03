@@ -101,6 +101,7 @@ export class FestivalsService {
         ORDER BY fi2."createdAt" DESC
         LIMIT 1
       ) fi ON true
+      WHERE f.date >= NOW()
       ORDER BY RANDOM()
       LIMIT ${count}
     `
