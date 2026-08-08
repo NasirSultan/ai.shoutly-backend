@@ -515,6 +515,14 @@ enum DemoBookingStatus {
   CANCELLED
 }
 
+model WebsiteSnapshot {
+  id        String   @id @default(uuid())
+  url       String   @unique
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model DemoBooking {
   id           String            @id @default(uuid())
   fullName     String

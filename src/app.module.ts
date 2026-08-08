@@ -27,6 +27,7 @@ import { AdminDashboardModule } from './admin-dashboard/admin-dashboard.module'
 import { IndustryRequestsModule } from './industry-requests/industry-requests.module'
 import { BookDemoModule } from './book-demo/book-demo.module'
 import { CalendarificModule } from './calendarific/calendarific.module'
+import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),ImagelayoutModule, FacebookModule,IndustriesModule, AuthModule,
@@ -53,6 +54,7 @@ import { CalendarificModule } from './calendarific/calendarific.module'
   IndustryRequestsModule,
   BookDemoModule,
   CalendarificModule,
+  WebsiteWatcherModule,
 ],
   controllers: [AppController],
   providers: [AppService],
