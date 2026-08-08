@@ -4,6 +4,7 @@ import { UpdateUserDto } from './dto/update-user.dto';
 import { ImgbbService } from '../lib/imgbb/imgbb.service';
 import { Express } from 'express';
 import { UpdatePasswordDto } from './dto/update-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import * as bcrypt from 'bcrypt';
 import { prisma } from '../lib/prisma';
 import { AuditLogService, AuditActor } from '../audit-log/audit-log.service';
@@ -109,6 +110,17 @@ export class UserService {
       orderBy: { createdAt: 'desc' },
       take: CSV_EXPORT_ROW_LIMIT,
     });
+  }
+
+  async findSelf(id: string) {
+    const user = await this.prisma.user.findUnique({ where: { id }, select: this.adminSelect });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  async updateSelf(id: string, dto: UpdateProfileDto) {
+    await this.findSelf(id);
+    return this.prisma.user.update({ where: { id }, data: dto, select: this.adminSelect });
   }
 
   async findOneForAdmin(id: string) {
@@ -219,6 +231,20 @@ export class UserService {
         file: imageUrl,
         deleteFileUrl: deleteUrl
       }
+    });
+  }
+
+  async removeProfilePhoto(id: string) {
+    const user = await this.findOne(id);
+
+    if (user.deleteFileUrl) {
+      await this.imgbbService.deleteFile(user.deleteFileUrl);
+    }
+
+    return this.prisma.user.update({
+      where: { id },
+      data: { file: null, deleteFileUrl: null },
+      select: this.adminSelect,
     });
   }
 

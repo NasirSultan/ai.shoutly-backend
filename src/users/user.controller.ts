@@ -1,10 +1,11 @@
-import { Body, Controller, Delete, Get,UseGuards, Param, Patch, Post,Query,Req,Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Delete, Get,UseGuards, Param, Patch, Post,Query,Req,Res, UploadedFile, UseInterceptors, ValidationPipe } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { UserService } from './user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UpdatePasswordDto } from './dto/update-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { SelectSubIndustryDto } from './dto/select-sub-industry.dto';
 import { Express } from 'express'
@@ -78,6 +79,13 @@ export class UserController {
     console.log('Received file:', userId);
     return this.userService.updateProfilePhoto(userId, file);
   }
+  @Delete('profile-photo')
+  @UseGuards(AuthGuard)
+  removeProfilePhoto(@Req() req) {
+    const userId = req.user.id;
+    return this.userService.removeProfilePhoto(userId);
+  }
+
   @Patch('password')
   @UseGuards(AuthGuard)
   updatePassword(@Req() req, @Body() dto: UpdatePasswordDto) {
@@ -95,6 +103,18 @@ export class UserController {
   @UseGuards(AuthGuard)
   selectSubIndustry(@Req() req, @Body() dto: SelectSubIndustryDto) {
     return this.userService.selectSubIndustry(req.user.id, dto.subIndustryId);
+  }
+
+  @Get('me')
+  @UseGuards(AuthGuard)
+  getProfile(@Req() req) {
+    return this.userService.findSelf(req.user.id);
+  }
+
+  @Patch('me')
+  @UseGuards(AuthGuard)
+  updateProfile(@Req() req, @Body(ValidationPipe) dto: UpdateProfileDto) {
+    return this.userService.updateSelf(req.user.id, dto);
   }
 
   @Get(':id')
