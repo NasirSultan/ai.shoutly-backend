@@ -185,6 +185,33 @@ export class PostWorker implements OnModuleInit {
   private async process(job: Job<PublishJobData>) {
     const { calendarPostId } = job.data
 
+    // Guards against this post being published twice — e.g. BullMQ's
+    // stalled-job detection re-dispatching this same job to another worker
+    // while a slow, media-heavy first attempt is still in flight with
+    // Outstand (media posts take noticeably longer than text-only ones,
+    // which is exactly when this showed up). Only one concurrent run can
+    // acquire the lock; any other run for the same post bails out
+    // immediately instead of calling Outstand a second time. Released in
+    // the finally block below regardless of success/failure, so BullMQ's
+    // own legitimate attempt-retry (on real failures) still works normally.
+    const lockKey = `publish-lock:${calendarPostId}`
+    const acquired = await this.redisService.getClient().set(lockKey, String(job.id ?? '1'), {
+      NX: true,
+      EX: 300,
+    })
+    if (!acquired) {
+      console.warn(`[Outstand Worker] Post ${calendarPostId} is already being published — skipping duplicate run.`)
+      return { skipped: true, reason: 'duplicate-run' }
+    }
+
+    try {
+      return await this.publishPost(calendarPostId)
+    } finally {
+      await this.redisService.getClient().del(lockKey)
+    }
+  }
+
+  private async publishPost(calendarPostId: string) {
     // 1. Resolve calendar structural items along with relational social accounts
     const post = await prisma.calendarPost.findUnique({
       where: { id: calendarPostId },
