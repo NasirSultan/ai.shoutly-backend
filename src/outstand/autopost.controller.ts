@@ -6,6 +6,8 @@ import {
   UseGuards,
   Get,
   Query,
+  Delete,
+  Param,
 } from '@nestjs/common';
 import { AutopostService } from './autopost.service';
 import { ConnectAccountDto } from './dto/connect-account.dto';
@@ -58,6 +60,12 @@ export class AutopostController {
   @UseGuards(AuthGuard)
   getConnectionStatus(@Req() req) {
     return this.autopostService.getConnectionStatus(req.user.id);
+  }
+
+  @Delete('accounts/:id')
+  @UseGuards(AuthGuard)
+  disconnectAccount(@Req() req, @Param('id') id: string) {
+    return this.autopostService.disconnectAccount(req.user.id, id);
   }
 
   @Get('accounts-overview')
@@ -191,14 +199,18 @@ export class AutopostController {
       );
     }
 
-    // 🅱️ FLOW B: IMMEDIATE CONNECTION (Instagram, LinkedIn, etc.)
+    // 🅱️ FLOW B: IMMEDIATE CONNECTION (Instagram, X, LinkedIn, etc.)
     if (body.account_id) {
+      // No silent platform default here anymore — saveDirectConnection()
+      // verifies the real network against Outstand directly. `body.network`
+      // is passed through only as a hint for that mismatch check; if it's
+      // missing and Outstand verification also fails, saveDirectConnection
+      // will reject rather than guess.
       return this.autopostService.saveDirectConnection(userId, {
         outstandAccountId: body.account_id,
-        // Use ?? to provide absolute fallback strings so TypeScript compiles perfectly
         networkUniqueId: body.network_unique_id ?? '',
         username: body.username ?? 'Unknown Account',
-        platform: body.network ?? 'INSTAGRAM',
+        platform: body.network ?? '',
       });
     }
 

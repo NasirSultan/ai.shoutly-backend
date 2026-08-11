@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SocialPlatform, PostStatusBridge, DeliveryStatus } from '@prisma/client';
 import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
@@ -573,6 +573,26 @@ export class AutopostService {
       }
   
 
+  // Outstand is the source of truth for which network an account actually
+  // belongs to. Trusting whatever `platform`/`network` string a caller
+  // happens to send is what let a connection get silently saved as the
+  // wrong platform (an X account saved as INSTAGRAM, once, because that
+  // caller omitted the field and hit the old default). This looks the
+  // account up on Outstand directly instead of trusting the caller.
+  private async verifyOutstandNetwork(outstandAccountId: string): Promise<string | null> {
+    try {
+      const response = await axios.get(`${this.outstandBaseUrl}/social-accounts`, {
+        headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+      });
+      const accounts: any[] = response.data?.data || [];
+      const match = accounts.find((a) => a.id === outstandAccountId);
+      return match?.network ?? null;
+    } catch (err) {
+      console.error('[verifyOutstandNetwork] Failed to verify account network with Outstand:', err.message);
+      return null;
+    }
+  }
+
   async saveDirectConnection(userId: string, details: {
     outstandAccountId: string,
     networkUniqueId: string,
@@ -580,7 +600,14 @@ export class AutopostService {
     platform: string
   }) {
     try {
-      const platformEnum = this.normalizePlatform(details.platform)
+      const verifiedNetwork = await this.verifyOutstandNetwork(details.outstandAccountId)
+      if (verifiedNetwork && verifiedNetwork.toLowerCase() !== details.platform?.toLowerCase()) {
+        console.warn(
+          `[saveDirectConnection] Caller-supplied platform "${details.platform}" did not match ` +
+          `Outstand's own record ("${verifiedNetwork}") for account ${details.outstandAccountId}. Using Outstand's value.`
+        )
+      }
+      const platformEnum = this.normalizePlatform(verifiedNetwork || details.platform)
 
       await this.prisma.$executeRaw`
         DELETE FROM "SocialAccount"
@@ -643,8 +670,63 @@ export class AutopostService {
       console.error('Error saving direct network profile entry:', error)
       throw new InternalServerErrorException('Database sync failed during direct token assembly.')
     }
-  }  
-  
+  }
+
+  // ── Disconnects a social account: removes it on Outstand's side, deletes
+  // our local record, and drops the platform from connectedSocials if no
+  // other active account for it remains. `socialAccountId` is OUR row id
+  // (SocialAccount.id), not Outstand's account id — scoped to the calling
+  // user so nobody can disconnect someone else's account.
+  async disconnectAccount(userId: string, socialAccountId: string) {
+    const account = await this.prisma.socialAccount.findFirst({
+      where: { id: socialAccountId, userId },
+    })
+
+    if (!account) {
+      throw new NotFoundException('Social account not found or not owned by this user.')
+    }
+
+    try {
+      await axios.delete(`${this.outstandBaseUrl}/social-accounts/${account.outstandAccountId}`, {
+        headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+      })
+    } catch (error) {
+      // A 404 just means Outstand already doesn't have it (e.g. user
+      // revoked access on the platform's side) — fine to continue cleaning
+      // up our own record. Any other failure means Outstand still thinks
+      // the account is live, so abort rather than desync from it silently.
+      if (axios.isAxiosError(error) && error.response?.status !== 404) {
+        console.error('[disconnectAccount] Outstand rejected the disconnect:', error.response?.data || error.message)
+        throw new BadRequestException('Failed to disconnect account on Outstand — try again.')
+      }
+    }
+
+    await this.prisma.socialAccount.delete({ where: { id: account.id } })
+
+    const remaining = await this.prisma.socialAccount.count({
+      where: { userId, platform: account.platform, status: 'active' },
+    })
+
+    if (remaining === 0 && account.platform) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { connectedSocials: true },
+      })
+      if (user) {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: {
+            connectedSocials: {
+              set: user.connectedSocials.filter((p) => p !== account.platform),
+            },
+          },
+        })
+      }
+    }
+
+    return { success: true, message: `${account.platform} account disconnected` }
+  }
+
   // ── One-time (per network) admin action: registers a network's OAuth app
   // credentials (client key/secret) with Outstand so getConnectUrl() can
   // issue auth URLs for it. Must be called once per network before any user
