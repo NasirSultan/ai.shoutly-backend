@@ -52,8 +52,7 @@ export class BrevoService {
   async sendPostPublishedEmail(
   toEmail: string,
   userName: string,
-  pageName: string,
-  postedAt: string
+  platformRowsHtml: string,
 ) {
   const senderEmail = this.configService.get<string>('BREVO_SENDER_EMAIL')
   const senderName = this.configService.get<string>('BREVO_SENDER_NAME')
@@ -68,11 +67,10 @@ export class BrevoService {
       name: senderName,
     },
     to: [{ email: toEmail, name: userName }],
-    subject: 'Your post is live on ' + pageName,
+    subject: 'Your ShoutlyAI post is now live!',
     params: {
       userName,
-      pageName,
-      postedAt,
+      platformRows: platformRowsHtml,
     },
     templateId: 3,
   })

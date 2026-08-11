@@ -9,6 +9,7 @@ import * as bcrypt from 'bcrypt';
 import { prisma } from '../lib/prisma';
 import { AuditLogService, AuditActor } from '../audit-log/audit-log.service';
 import { CSV_EXPORT_ROW_LIMIT } from '../common/utils/csv.util';
+import { normalizeTimezone } from '../common/utils/timezone.util';
 @Injectable()
 export class UserService {
   private prisma = prisma;
@@ -120,7 +121,10 @@ export class UserService {
 
   async updateSelf(id: string, dto: UpdateProfileDto) {
     await this.findSelf(id);
-    return this.prisma.user.update({ where: { id }, data: dto, select: this.adminSelect });
+    const data = dto.timezone !== undefined
+      ? { ...dto, timezone: normalizeTimezone(dto.timezone) }
+      : dto;
+    return this.prisma.user.update({ where: { id }, data, select: this.adminSelect });
   }
 
   async findOneForAdmin(id: string) {

@@ -126,6 +126,8 @@ import { BrevoService } from '../brevo/brevo.service'
 import { DateTime } from 'luxon'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
+import { normalizeTimezone } from '../common/utils/timezone.util'
+import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
 
 interface PublishJobData {
   calendarPostId: string
@@ -248,15 +250,20 @@ export class PostWorker implements OnModuleInit {
 
       // 6. Push transactional status confirmation email to user via Brevo
       if (user.email) {
-        const tz = user.timezone || 'Asia/Karachi'
+        const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
         const postedAt = DateTime.now().setZone(tz).toFormat("MMM dd, yyyy 'at' hh:mm a")
-        const dynamicPlatformsLabel = user.socialAccounts.map(a => a.platform).join(' & ')
+        const platformRows = buildPlatformRowsHtml(
+          user.socialAccounts.map((acc) => ({
+            platform: acc.platform || 'Unknown',
+            accountName: acc.username || acc.platform || 'Connected account',
+            postedAt,
+          })),
+        )
 
         await this.brevoService.sendPostPublishedEmail(
           user.email,
           user.name || 'Creator',
-          dynamicPlatformsLabel,
-          postedAt,
+          platformRows,
         ).catch((err) => {
           console.error('[Brevo Alert Failed]:', err?.message || err?.response?.data || JSON.stringify(err))
         })

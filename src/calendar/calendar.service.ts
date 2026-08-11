@@ -4,6 +4,7 @@ import { DateTime } from 'luxon'
 import { randomUUID } from 'crypto'
 import { prisma } from '../lib/prisma'
 import { PostQueue } from '../jobs/post.queue'
+import { normalizeTimezone } from '../common/utils/timezone.util'
 
 @Injectable()
 export class CalendarService {
@@ -51,7 +52,7 @@ export class CalendarService {
       where: { id: userId },
       select: { timezone: true },
     })
-    return user?.timezone || 'UTC'
+    return normalizeTimezone(user?.timezone)
   }
 
   // Cached in-memory after first lookup per running instance. Not a schema
@@ -208,7 +209,7 @@ export class CalendarService {
     const planType = 'PAID'
     const totalDays = 31
 
-    const userTz = user.timezone || 'UTC'
+    const userTz = normalizeTimezone(user.timezone)
     const [hours, minutes] = postTimeInput.split(':').map(Number)
 
     // Build each day's postTime in user's timezone, then convert to UTC
@@ -413,7 +414,7 @@ async getPlanByUser(userId: string) {
 
    if (body.postTime) {
      updatedData.postTime = DateTime
-       .fromISO(body.postTime, { zone: body.timezone })
+       .fromISO(body.postTime, { zone: body.timezone ? normalizeTimezone(body.timezone) : undefined })
        .toUTC()
        .toISO()
    }
@@ -564,7 +565,9 @@ async getPostDetails(userId: string, postId: string) {
 
     // Convert postTime (a full ISO datetime, in the user's local timezone) to UTC.
     // Matches updatePost's contract so callers can pick any date, not just today.
-    const userTz = body.timezone || await this.getUserTimezone(userId)
+    const userTz = body.timezone
+      ? normalizeTimezone(body.timezone, await this.getUserTimezone(userId))
+      : await this.getUserTimezone(userId)
     const utcPostTime = DateTime.fromISO(postTime, { zone: userTz }).toUTC().toJSDate()
 
     const post = await prisma.calendarPost.create({
@@ -701,7 +704,9 @@ async getPostDetails(userId: string, postId: string) {
       imageUrl = imageData.imageUrl
     }
 
-    const userTz = body.timezone || await this.getUserTimezone(userId)
+    const userTz = body.timezone
+      ? normalizeTimezone(body.timezone, await this.getUserTimezone(userId))
+      : await this.getUserTimezone(userId)
     const utcPostTime = DateTime.fromISO(postTime, { zone: userTz }).toUTC().toJSDate()
 
     const post = await prisma.calendarPost.create({

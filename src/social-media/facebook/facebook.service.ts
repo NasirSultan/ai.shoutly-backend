@@ -4,6 +4,8 @@ import { CreatePostDto ,DirectPostDto} from './dto/post.dto';
 import { DateTime } from 'luxon'
 import { BrevoService } from 'src/brevo/brevo.service'
 import { prisma } from '../../lib/prisma';
+import { normalizeTimezone } from '../../common/utils/timezone.util';
+import { buildPlatformRowsHtml } from '../../common/utils/email-template.util';
 
 
 @Injectable()
@@ -212,14 +214,16 @@ async directPost(dto: DirectPostDto) {
   })
 
   if (user?.email) {
-    const tz = user.timezone || 'Asia/Karachi'
+    const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
     const postedAt = DateTime.now().setZone(tz).toFormat('MMM dd, yyyy \'at\' hh:mm a')
+    const platformRows = buildPlatformRowsHtml([
+      { platform: 'facebook', accountName: defaultPage.pageName || defaultPage.pageId, postedAt },
+    ])
 
     await this.brevoService.sendPostPublishedEmail(
       user.email,
       user.name,
-      defaultPage.pageName || defaultPage.pageId,
-      postedAt,
+      platformRows,
     ).catch((err) => console.error('[Brevo] Email failed:', err.message))
   }
 
