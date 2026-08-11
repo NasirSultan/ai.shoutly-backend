@@ -18,6 +18,12 @@ export class AutopostService {
       instagram: 'INSTAGRAM',
       linkedin: 'LINKEDIN',
       x: 'X',
+      youtube: 'YOUTUBE',
+      tiktok: 'TIKTOK',
+      pinterest: 'PINTEREST',
+      threads: 'THREADS',
+      bluesky: 'BLUESKY',
+      google_business: 'GOOGLE_BUSINESS',
     };
 
     const normalized = map[raw?.toLowerCase()?.trim() ?? ''];
@@ -49,8 +55,7 @@ export class AutopostService {
         },
         // 3. You MUST provide the redirect_uri in the body payload
         body: JSON.stringify({
-          redirect_uri: 'https://shoutlyai.com/dashboards/settings/accounts', // Replace with your real app callback
-          // redirect_uri: 'https://6afa55be-ad49-4311-974d-1def01b3a834-00-355gnyxvxaw1u.pike.replit.dev/dashboards/settings/accounts',
+          redirect_uri: dto.redirectUri || 'https://shoutlyai.com/dashboards/settings/accounts',
           state: userId // You can safely pass your state/userId here inside the body object
         }),
       });
@@ -83,8 +88,19 @@ export class AutopostService {
       byPlatform[acc.platform] = acc;
     }
 
-    // Only platforms normalizePlatform() actually supports today
-    const SUPPORTED_PLATFORMS = ['FACEBOOK', 'INSTAGRAM', 'LINKEDIN', 'X'];
+    // Kept in sync with normalizePlatform()'s map above
+    const SUPPORTED_PLATFORMS = [
+      'FACEBOOK',
+      'INSTAGRAM',
+      'LINKEDIN',
+      'X',
+      'YOUTUBE',
+      'TIKTOK',
+      'PINTEREST',
+      'THREADS',
+      'BLUESKY',
+      'GOOGLE_BUSINESS',
+    ];
 
     const platforms = SUPPORTED_PLATFORMS.map((platform) => {
       const acc = byPlatform[platform];
@@ -629,7 +645,40 @@ export class AutopostService {
     }
   }  
   
-  // Webhook intake to log finalized connections coming over the wire asynchronously
+  // ── One-time (per network) admin action: registers a network's OAuth app
+  // credentials (client key/secret) with Outstand so getConnectUrl() can
+  // issue auth URLs for it. Must be called once per network before any user
+  // can connect that platform. See POST /autopost/networks/configure.
+  async configureNetwork(network: string, clientKey: string, clientSecret: string) {
+    try {
+      const response = await axios.post(
+        `${this.outstandBaseUrl}/social-networks`,
+        { network, client_key: clientKey, client_secret: clientSecret },
+        {
+          headers: {
+            'Authorization': `Bearer ${this.outstandApiKey}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      return { success: true, data: response.data };
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response) {
+        throw new BadRequestException(
+          error.response.data?.message || error.response.data?.error || 'Outstand rejected the network configuration'
+        );
+      }
+      throw new InternalServerErrorException('Failed to configure network with Outstand');
+    }
+  }
+
+  async listNetworks() {
+    const response = await axios.get(`${this.outstandBaseUrl}/social-networks`, {
+      headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+    });
+    return response.data;
+  }
+
   // Webhook intake to log finalized connections coming over the wire asynchronously
   async handleIncomingWebhook(payload: any) {
     const { event, data } = payload;

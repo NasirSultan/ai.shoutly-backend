@@ -62,6 +62,12 @@ enum SocialPlatform {
   X
   LINKEDIN
   INSTAGRAM
+  YOUTUBE
+  TIKTOK
+  PINTEREST
+  THREADS
+  BLUESKY
+  GOOGLE_BUSINESS
 }
 
 enum UserRole {

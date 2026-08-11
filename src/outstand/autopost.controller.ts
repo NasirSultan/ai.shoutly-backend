@@ -12,10 +12,18 @@ import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
 import { SchedulePostDto } from './dto/schedule-post.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
 import {
   BadRequestException,
   InternalServerErrorException,
 } from '@nestjs/common';
+
+// Networks that don't need OAuth-app credentials passed explicitly (e.g. Bluesky
+// uses handle + app password instead) can be added here with empty defaults.
+const NETWORK_ENV_CREDENTIALS: Record<string, { key?: string; secret?: string }> = {
+  x: { key: process.env.X_CLIENT_ID || process.env.X_CONSUMER_KEY, secret: process.env.X_CLIENT_SECRET || process.env.X_SECRET_KEY },
+  twitter: { key: process.env.X_CLIENT_ID || process.env.X_CONSUMER_KEY, secret: process.env.X_CLIENT_SECRET || process.env.X_SECRET_KEY },
+};
 
 @Controller('autopost')
 export class AutopostController {
@@ -203,5 +211,36 @@ export class AutopostController {
   @Post('test-fetch-accounts')
   async getAllAccountsForTesting() {
     return this.autopostService.getAllAccountsDebug();
+  }
+
+  // ── Admin-only: one-time per-network setup. Registers a network's OAuth
+  // app credentials with Outstand so users can start connecting that
+  // platform. Falls back to env vars (see NETWORK_ENV_CREDENTIALS) when the
+  // request body omits key/secret.
+  @Post('networks/configure')
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+  configureNetwork(@Body() body: { network: string; key?: string; secret?: string }) {
+    const network = body.network?.toLowerCase();
+    if (!network) {
+      throw new BadRequestException('network is required');
+    }
+
+    const fromEnv = NETWORK_ENV_CREDENTIALS[network] || {};
+    const clientKey = body.key || fromEnv.key;
+    const clientSecret = body.secret || fromEnv.secret;
+
+    if (!clientKey || !clientSecret) {
+      throw new BadRequestException(
+        `Missing credentials for "${network}". Pass key/secret in the body, or set env vars for that network.`,
+      );
+    }
+
+    return this.autopostService.configureNetwork(network, clientKey, clientSecret);
+  }
+
+  @Get('networks')
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
+  listNetworks() {
+    return this.autopostService.listNetworks();
   }
 }
