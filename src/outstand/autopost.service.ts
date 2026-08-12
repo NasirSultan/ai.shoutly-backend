@@ -779,7 +779,22 @@ export class AutopostService {
     })
 
     if (!post) {
-      throw new NotFoundException('Post not found or not owned by this user.')
+      // Not every "post" a client shows comes from the Post table — the
+      // calendar/plan feature (GET /calendar/plan) is backed by a separate
+      // CalendarPost table with its own ids. Fall back to it here so this
+      // one endpoint can delete either, instead of callers needing to know
+      // which table a given id belongs to.
+      const calendarPost = await this.prisma.calendarPost.findFirst({
+        where: { id: postId, userId },
+      })
+
+      if (!calendarPost) {
+        throw new NotFoundException('Post not found or not owned by this user.')
+      }
+
+      await this.prisma.calendarPost.delete({ where: { id: calendarPost.id } })
+
+      return { success: true, message: 'Post deleted', postId: calendarPost.id, previousStatus: calendarPost.status }
     }
 
     if (post.outstandPostId) {
