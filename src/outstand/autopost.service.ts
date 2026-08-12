@@ -5,6 +5,9 @@ import { PublishPostDto } from './dto/publish-post.dto';
 import { SchedulePostDto } from './dto/schedule-post.dto';
 import axios from 'axios';
 import { prisma } from '../lib/prisma';
+import { Express } from 'express';
+import { createHash } from 'crypto';
+import { RedisService } from '../common/redis/redis.service';
 
 @Injectable()
 export class AutopostService {
@@ -35,10 +38,23 @@ export class AutopostService {
     return normalized;
   }
   
-  constructor() {
+  constructor(private readonly redisService: RedisService) {
     if (!this.outstandApiKey) {
       console.warn('Warning: OUTSTAND_API_KEY is not defined in your environment variables.');
     }
+  }
+
+  // Guards against the exact same post going out twice — e.g. a
+  // double-click on Publish, or a frontend retrying a request that
+  // actually succeeded. Locks on (user + content + platforms) for a short
+  // window; a second identical call within that window is rejected instead
+  // of silently creating a second live post. Real distinct posts (different
+  // content, or the same content sent later) are unaffected.
+  private async acquirePublishLock(userId: string, fingerprint: string): Promise<boolean> {
+    const hash = createHash('sha256').update(fingerprint).digest('hex')
+    const lockKey = `publish-dedupe:${userId}:${hash}`
+    const acquired = await this.redisService.getClient().set(lockKey, '1', { NX: true, EX: 15 })
+    return acquired !== null
   }
 
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
@@ -246,10 +262,22 @@ export class AutopostService {
   }
 
   async publishImmediately(userId: string, dto: PublishPostDto) {
+    const fingerprint = JSON.stringify({ content: dto.content, platforms: dto.platforms, mediaUrls: dto.mediaUrls })
+    if (!(await this.acquirePublishLock(userId, fingerprint))) {
+      throw new BadRequestException('This exact post was just submitted — please wait a few seconds before retrying.')
+    }
+
     // 1. Resolve outstandAccountIds from platforms via DB
     const platforms: SocialPlatform[] = dto.platforms.map(p =>
       this.normalizePlatform(p)
     );
+
+    // YouTube posts fail on Outstand's side without a video — better to
+    // reject up front with a clear message than let every request go out
+    // and fail remotely.
+    if (platforms.includes('YOUTUBE') && (!dto.mediaUrls || dto.mediaUrls.length === 0)) {
+      throw new BadRequestException('YouTube requires a video file — pass its URL in mediaUrls.');
+    }
 
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
@@ -291,6 +319,7 @@ export class AutopostService {
         {
           accounts: outstandAccountIds,
           containers: [container],
+          ...(dto.youtube ? { youtube: dto.youtube } : {}),
         },
         {
           headers: {
@@ -338,10 +367,14 @@ export class AutopostService {
   }
 
   async scheduleForLater(userId: string, dto: SchedulePostDto) {
-    
+
     const platforms: SocialPlatform[] = dto.platforms.map(p =>
       this.normalizePlatform(p)
     );
+
+    if (platforms.includes('YOUTUBE') && dto.posts.some((p) => !p.mediaUrls || p.mediaUrls.length === 0)) {
+      throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
+    }
 
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
@@ -359,6 +392,16 @@ export class AutopostService {
     // 2. Process each post independently
     const results = await Promise.allSettled(
       dto.posts.map(async (postItem) => {
+        const fingerprint = JSON.stringify({
+          content: postItem.content,
+          scheduledAt: postItem.scheduledAt,
+          platforms: dto.platforms,
+          mediaUrls: postItem.mediaUrls,
+        })
+        if (!(await this.acquirePublishLock(userId, fingerprint))) {
+          throw new BadRequestException('This exact scheduled post was just submitted — please wait a few seconds before retrying.')
+        }
+
         // Create individual post record
         const postRecord = await this.prisma.post.create({
           data: {
@@ -390,10 +433,13 @@ export class AutopostService {
           payload.content = postItem.content;
         }
 
+        if (postItem.youtube) {
+          payload.youtube = postItem.youtube;
+        }
+
         // Fire to Outstand
         try {
           console.log('Outstand Scheduling Payload:', JSON.stringify(payload));
-          console.log('Outstand API Key:', this.outstandApiKey);
           console.log('Outstand Base URL:', this.outstandBaseUrl);
 
           const targetUrl = `${this.outstandBaseUrl}/posts/`;
@@ -725,6 +771,82 @@ export class AutopostService {
     }
 
     return { success: true, message: `${account.platform} account disconnected` }
+  }
+
+  async deletePost(userId: string, postId: string) {
+    const post = await this.prisma.post.findFirst({
+      where: { id: postId, userId },
+    })
+
+    if (!post) {
+      throw new NotFoundException('Post not found or not owned by this user.')
+    }
+
+    if (post.outstandPostId) {
+      try {
+        await axios.delete(`${this.outstandBaseUrl}/posts/${post.outstandPostId}`, {
+          headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+        })
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status !== 404) {
+          console.error('[deletePost] Outstand rejected the delete:', error.response?.data || error.message)
+          throw new BadRequestException('Failed to delete post on Outstand — try again.')
+        }
+      }
+    }
+
+    await this.prisma.post.delete({ where: { id: post.id } })
+
+    return { success: true, message: 'Post deleted', postId: post.id, previousStatus: post.status }
+  }
+
+  // ── Lets a user upload a file (image/video) straight from their device
+  // instead of already having a public URL in hand. Goes through Outstand's
+  // own three-step media API (request an upload slot → PUT the raw bytes →
+  // confirm) instead of our own AWS bucket — Outstand hosts the file and
+  // hands back the public URL, so there's no dependency on our S3 setup at
+  // all, and the URL is guaranteed to be in a shape Outstand/YouTube accept.
+  async uploadMedia(file: Express.Multer.File): Promise<{ url: string; filename: string }> {
+    try {
+      // 1. Ask Outstand for an upload slot
+      const slotResponse = await axios.post(
+        `${this.outstandBaseUrl}/media/upload`,
+        { filename: file.originalname, content_type: file.mimetype },
+        { headers: { Authorization: `Bearer ${this.outstandApiKey}`, 'Content-Type': 'application/json' } },
+      )
+      const slot = slotResponse.data?.data || slotResponse.data || {}
+      const mediaId = slot.id
+      const uploadUrl = slot.upload_url
+      if (!mediaId || !uploadUrl) {
+        throw new Error('Outstand did not return an upload slot')
+      }
+
+      // 2. PUT the raw file bytes directly to Outstand's upload URL
+      await axios.put(uploadUrl, file.buffer, {
+        headers: { 'Content-Type': file.mimetype },
+      })
+
+      // 3. Confirm the upload — Outstand hands back the final public URL
+      const confirmResponse = await axios.post(
+        `${this.outstandBaseUrl}/media/${mediaId}/confirm`,
+        { size: file.size },
+        { headers: { Authorization: `Bearer ${this.outstandApiKey}`, 'Content-Type': 'application/json' } },
+      )
+      const confirmed = confirmResponse.data?.data || confirmResponse.data || {}
+
+      if (!confirmed.url) {
+        throw new Error('Outstand did not return a public URL after confirming the upload')
+      }
+
+      return { url: confirmed.url, filename: confirmed.filename || file.originalname }
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        console.error('[uploadMedia] Outstand upload failed:', error.response?.data || error.message)
+      } else {
+        console.error('[uploadMedia] Upload failed:', error)
+      }
+      throw new InternalServerErrorException('Media upload failed — try again.')
+    }
   }
 
   // ── One-time (per network) admin action: registers a network's OAuth app

@@ -8,7 +8,11 @@ import {
   Query,
   Delete,
   Param,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { Express } from 'express';
 import { AutopostService } from './autopost.service';
 import { ConnectAccountDto } from './dto/connect-account.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
@@ -44,6 +48,20 @@ export class AutopostController {
     return this.autopostService.getUserAccounts(req.user.id);
   }
 
+  // Lets the compose form upload a file directly (e.g. a video for
+  // YouTube) instead of requiring the caller to already have a public URL.
+  // Returns { url, filename } — drop `url` straight into publish/schedule's
+  // mediaUrls.
+  @Post('media/upload')
+  @UseGuards(AuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadMedia(@UploadedFile() file?: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file provided — send it as multipart field "file".');
+    }
+    return this.autopostService.uploadMedia(file);
+  }
+
   @Get('analytics')
   @UseGuards(AuthGuard)
   async getDashboardAnalytics(
@@ -66,6 +84,12 @@ export class AutopostController {
   @UseGuards(AuthGuard)
   disconnectAccount(@Req() req, @Param('id') id: string) {
     return this.autopostService.disconnectAccount(req.user.id, id);
+  }
+
+  @Delete('posts/:id')
+  @UseGuards(AuthGuard)
+  deletePost(@Req() req, @Param('id') id: string) {
+    return this.autopostService.deletePost(req.user.id, id);
   }
 
   @Get('accounts-overview')

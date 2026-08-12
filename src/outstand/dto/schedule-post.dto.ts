@@ -24,6 +24,7 @@
 // schedule-post.dto.ts
 import { IsArray, IsDateString, IsNotEmpty, IsOptional, IsString, IsUrl, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
+import { YoutubeOptionsDto } from './youtube-options.dto';
 
 export class ScheduledPostItemDto {
   @IsString()
@@ -38,6 +39,13 @@ export class ScheduledPostItemDto {
   @IsDateString()
   @IsNotEmpty()
   scheduledAt: string;
+
+  // Only used when "youtube" is included in platforms — each scheduled
+  // video can carry its own title/privacy/Shorts settings.
+  @ValidateNested()
+  @Type(() => YoutubeOptionsDto)
+  @IsOptional()
+  youtube?: YoutubeOptionsDto;
 }
 
 export class SchedulePostDto {
