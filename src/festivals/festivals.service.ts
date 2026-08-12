@@ -37,8 +37,9 @@ export class FestivalsService {
     search?: string
     upcoming?: boolean
     country?: string
+    withImages?: boolean
   }) {
-    const { page, limit, type, month, year, search, upcoming, country } = opts
+    const { page, limit, type, month, year, search, upcoming, country, withImages } = opts
     const offset = (page - 1) * limit
 
     const where: any = {}
@@ -47,6 +48,7 @@ export class FestivalsService {
     if (country) where.country = country
     if (search) where.event = { contains: search, mode: 'insensitive' }
     if (upcoming) where.date = { gte: new Date() }
+    if (withImages) where.images = { some: { deletedAt: null } }
 
     if (month || year) {
       const now = new Date()

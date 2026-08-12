@@ -34,23 +34,25 @@ export class FestivalsController {
   @Get()
   findAll(
     @Query('page') page = '1',
-    @Query('limit') limit = '20',
+    @Query('limit') limit = '6',
     @Query('type') type?: FestivalType,
     @Query('month') month?: string,
     @Query('year') year?: string,
     @Query('search') search?: string,
     @Query('upcoming') upcoming?: string,
     @Query('country') country?: string,
+    @Query('withImages') withImages?: string,
   ) {
     return this.festivalsService.findAll({
       page: Math.max(1, parseInt(page) || 1),
-      limit: Math.min(100, Math.max(1, parseInt(limit) || 20)),
+      limit: Math.min(100, Math.max(1, parseInt(limit) || 6)),
       type,
       month: month ? parseInt(month) : undefined,
       year: year ? parseInt(year) : undefined,
       search: search?.trim() || undefined,
       upcoming: upcoming === 'true',
       country: country?.trim() || undefined,
+      withImages: withImages !== 'false',
     })
   }
 
