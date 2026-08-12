@@ -76,15 +76,18 @@ export class FestivalsService {
         skip: offset,
         take: limit,
         include: {
-          _count: { select: { images: { where: { deletedAt: null } } } },
+          images: {
+            where: { deletedAt: null },
+            select: { file: true },
+          },
         },
       }),
     ])
 
     return {
-      data: data.map(({ _count, ...festival }) => ({
+      data: data.map(({ images, ...festival }) => ({
         ...festival,
-        imageCount: _count.images,
+        imageUrl: images.length ? images[Math.floor(Math.random() * images.length)].file : null,
       })),
       meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     }
