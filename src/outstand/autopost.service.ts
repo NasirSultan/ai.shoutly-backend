@@ -718,6 +718,49 @@ export class AutopostService {
     }
   }
 
+  // ── Bluesky has no OAuth step — unlike every other platform here, there's
+  // no /connect redirect or callback. The handle + app password are
+  // submitted straight to Outstand in one call, which creates the AT
+  // Protocol session immediately and hands back the account synchronously.
+  async connectBlueskyDirect(userId: string, handle: string, appPassword: string) {
+    const cleanHandle = handle.trim().replace(/^@/, '')
+    if (!cleanHandle || !appPassword?.trim()) {
+      throw new BadRequestException('handle and appPassword are required')
+    }
+
+    let accountData: any
+    try {
+      const response = await axios.post(
+        `${this.outstandBaseUrl}/social-accounts/bluesky`,
+        { handle: cleanHandle, appPassword: appPassword.trim() },
+        { headers: { Authorization: `Bearer ${this.outstandApiKey}`, 'Content-Type': 'application/json' } },
+      )
+      accountData = response.data?.data || response.data
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response) {
+        console.error('[connectBlueskyDirect] Outstand rejected the connection:', error.response.data)
+        throw new BadRequestException(
+          error.response.data?.message || 'Outstand rejected the Bluesky handle/app password.'
+        )
+      }
+      throw new InternalServerErrorException('Failed to reach Outstand for Bluesky connection.')
+    }
+
+    if (!accountData?.id) {
+      throw new InternalServerErrorException('Outstand did not return an account id for the Bluesky connection.')
+    }
+
+    // Reuses the same save path as every other direct connection —
+    // verifyOutstandNetwork() will independently confirm this account is
+    // really "bluesky" against Outstand's own records before saving.
+    return this.saveDirectConnection(userId, {
+      outstandAccountId: accountData.id,
+      networkUniqueId: accountData.network_unique_id || accountData.did || '',
+      username: accountData.username || accountData.nickname || cleanHandle,
+      platform: 'bluesky',
+    })
+  }
+
   // ── Disconnects a social account: removes it on Outstand's side, deletes
   // our local record, and drops the platform from connectedSocials if no
   // other active account for it remains. `socialAccountId` is OUR row id

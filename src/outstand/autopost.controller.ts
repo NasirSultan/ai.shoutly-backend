@@ -15,6 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Express } from 'express';
 import { AutopostService } from './autopost.service';
 import { ConnectAccountDto } from './dto/connect-account.dto';
+import { ConnectBlueskyDto } from './dto/connect-bluesky.dto';
 import { PublishPostDto } from './dto/publish-post.dto';
 import { SchedulePostDto } from './dto/schedule-post.dto';
 import { AuthGuard } from '../common/guards/auth.guard';
@@ -40,6 +41,15 @@ export class AutopostController {
   connectAccount(@Req() req, @Body() dto: ConnectAccountDto) {
     const userId = req.user.id;
     return this.autopostService.getConnectUrl(userId, dto);
+  }
+
+  // Bluesky-only: no OAuth redirect, the handle + app password go straight
+  // through in one call instead of the connect/callback dance every other
+  // platform uses.
+  @Post('connect/bluesky')
+  @UseGuards(AuthGuard)
+  connectBluesky(@Req() req, @Body() dto: ConnectBlueskyDto) {
+    return this.autopostService.connectBlueskyDirect(req.user.id, dto.handle, dto.appPassword);
   }
 
   @Post('accounts')
