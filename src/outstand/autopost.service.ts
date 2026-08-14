@@ -332,16 +332,21 @@ export class AutopostService {
       );
 
       const outstandResult = response.data;
+      // Outstand's create-post response has been observed under different
+      // keys depending on the call shape (schedule uses `post`, this one
+      // was written expecting `data`) — try each so outstandPostId actually
+      // gets captured instead of silently staying null.
+      const outstandPostId = outstandResult.data?.id ?? outstandResult.post?.id ?? outstandResult.id;
 
       await this.prisma.post.update({
         where: { id: postRecord.id },
         data: {
           status: 'PUBLISHED',
-          outstandPostId: outstandResult.data?.id,
+          outstandPostId,
         },
       });
 
-      return { success: true, postId: postRecord.id, outstandPostId: outstandResult.data?.id };
+      return { success: true, postId: postRecord.id, outstandPostId };
 
     } catch (error) {
       if (axios.isAxiosError(error) && error.response) {
@@ -456,10 +461,11 @@ export class AutopostService {
 
           // Axios automatically parses JSON data into response.data
           const responseData = response.data;
+          const outstandPostId = responseData.data?.id ?? responseData.post?.id ?? responseData.id;
 
           await this.prisma.post.update({
             where: { id: postRecord.id },
-            data: { outstandPostId: responseData.post?.id },
+            data: { outstandPostId },
           });
 
           return { success: true, postId: postRecord.id, scheduledAt: postItem.scheduledAt };
@@ -1063,6 +1069,24 @@ export class AutopostService {
       await this.prisma.postDelivery.updateMany({
         where: { outstandPostId: data.id },
         data: { deliveryStatus: 'PUBLISHED' },
+      });
+      return { processed: true };
+    }
+
+    // Outstand's create-post call returns success as soon as the post is
+    // accepted/queued — actual per-platform delivery happens afterward, and
+    // can fail there (e.g. Instagram rejecting an unsupported image aspect
+    // ratio) with no way for the original request to know. Without this,
+    // a post that fails on the real platform still sits as PUBLISHED in
+    // our DB forever, since nothing ever corrects it.
+    if (event === 'post.failed') {
+      await this.prisma.post.updateMany({
+        where: { outstandPostId: data.id },
+        data: { status: 'FAILED' },
+      });
+      await this.prisma.postDelivery.updateMany({
+        where: { outstandPostId: data.id },
+        data: { deliveryStatus: 'FAILED' },
       });
       return { processed: true };
     }
