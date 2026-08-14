@@ -550,9 +550,19 @@ export class AutopostService {
     const activatedAccounts = finalizeData.connectedAccounts || []; 
     const savedAccounts: any[] = []; 
 
-      // ✅ Raw SQL upsert — bypasses Platform vs SocialPlatform enum mismatch
+      // ✅ Raw SQL upsert — bypasses Platform vs SocialPlatform enum mismatch.
+      // Same ownership-transfer fix as saveDirectConnection(): reassigns
+      // "userId" on conflict so reconnecting a Page under a different app
+      // user doesn't leave it silently owned by whoever connected it first.
+      const previousOwnerIds = new Set<string>()
       for (const acc of activatedAccounts) {
         const username = acc.username || acc.nickname || 'Facebook Page'
+
+        const existing = await this.prisma.socialAccount.findUnique({
+          where: { outstandAccountId: acc.id },
+          select: { userId: true },
+        })
+        if (existing && existing.userId !== userId) previousOwnerIds.add(existing.userId)
 
         await this.prisma.$executeRaw`
           DELETE FROM "SocialAccount"
@@ -575,6 +585,7 @@ export class AutopostService {
           )
           ON CONFLICT ("outstandAccountId")
           DO UPDATE SET
+            "userId"   = ${userId},
             platform   = 'FACEBOOK'::"SocialPlatform",
             username   = ${username},
             "avatarUrl" = NULL,
@@ -586,6 +597,26 @@ export class AutopostService {
           SELECT * FROM "SocialAccount" WHERE "outstandAccountId" = ${acc.id}
         `
         savedAccounts.push(saved[0])
+      }
+
+      // Clean up connectedSocials for anyone who just lost their last
+      // Facebook account to this reassignment.
+      for (const previousOwnerId of previousOwnerIds) {
+        const remaining = await this.prisma.socialAccount.count({
+          where: { userId: previousOwnerId, platform: 'FACEBOOK', status: 'active' },
+        })
+        if (remaining === 0) {
+          const previousOwner = await this.prisma.user.findUnique({
+            where: { id: previousOwnerId },
+            select: { connectedSocials: true },
+          })
+          if (previousOwner) {
+            await this.prisma.user.update({
+              where: { id: previousOwnerId },
+              data: { connectedSocials: { set: previousOwner.connectedSocials.filter((p) => p !== 'FACEBOOK') } },
+            })
+          }
+        }
       }
 
       // Update connectedSocials on user
@@ -655,13 +686,30 @@ export class AutopostService {
       }
       const platformEnum = this.normalizePlatform(verifiedNetwork || details.platform)
 
+      // Outstand account ids are globally unique (one row per outstandAccountId
+      // across ALL users). If this same account was already connected under a
+      // different app user (e.g. the same real channel connected via two
+      // different test logins), we must find out now — the upsert below can't
+      // silently leave it owned by the old user while telling the NEW user's
+      // connectedSocials it's connected. That mismatch is exactly what caused
+      // "no accounts show up, but the platform says connected" bugs.
+      const existing = await this.prisma.socialAccount.findUnique({
+        where: { outstandAccountId: details.outstandAccountId },
+        select: { userId: true, platform: true },
+      })
+      const previousOwnerId = existing && existing.userId !== userId ? existing.userId : null
+
       await this.prisma.$executeRaw`
         DELETE FROM "SocialAccount"
         WHERE "userId" = ${userId}
         AND platform = ${platformEnum}::"SocialPlatform"
       `
-      
-      // ✅ Raw upsert bypasses Prisma enum type mismatch (Platform vs SocialPlatform)
+
+      // ✅ Raw upsert bypasses Prisma enum type mismatch (Platform vs SocialPlatform).
+      // Reassigns "userId" on conflict — whoever most recently completed OAuth
+      // for this account has proven current authorization, so ownership
+      // transfers to them instead of silently staying with whoever connected
+      // it first.
       await this.prisma.$executeRaw`
         INSERT INTO "SocialAccount" (id, "userId", "outstandAccountId", platform, username, status, "createdAt", "updatedAt")
         VALUES (
@@ -676,6 +724,7 @@ export class AutopostService {
         )
         ON CONFLICT ("outstandAccountId")
         DO UPDATE SET
+          "userId" = ${userId},
           platform = ${platformEnum}::"SocialPlatform",
           username = ${details.username},
           status = 'active',
@@ -686,6 +735,28 @@ export class AutopostService {
       const accountRecord = await this.prisma.$queryRaw<any[]>`
         SELECT * FROM "SocialAccount" WHERE "outstandAccountId" = ${details.outstandAccountId}
       `
+
+      // If ownership was just transferred away from someone else, drop the
+      // platform from their connectedSocials if they have no other account
+      // for it left — otherwise they'd be left in the same "says connected,
+      // isn't" state we just fixed for the new owner.
+      if (previousOwnerId) {
+        const remaining = await this.prisma.socialAccount.count({
+          where: { userId: previousOwnerId, platform: platformEnum, status: 'active' },
+        })
+        if (remaining === 0) {
+          const previousOwner = await this.prisma.user.findUnique({
+            where: { id: previousOwnerId },
+            select: { connectedSocials: true },
+          })
+          if (previousOwner) {
+            await this.prisma.user.update({
+              where: { id: previousOwnerId },
+              data: { connectedSocials: { set: previousOwner.connectedSocials.filter((p) => p !== platformEnum) } },
+            })
+          }
+        }
+      }
 
       // Update connectedSocials on user
       const user = await this.prisma.user.findUnique({
@@ -700,7 +771,7 @@ export class AutopostService {
           data: {
             connectedSocials: {
               // Cast platformEnum as any here to satisfy the compiler
-              set: [...user.connectedSocials, platformEnum] 
+              set: [...user.connectedSocials, platformEnum]
             }
           }
         })
@@ -898,12 +969,22 @@ export class AutopostService {
 
       return { url: confirmed.url, filename: confirmed.filename || file.originalname }
     } catch (error) {
+      // Surface the real reason instead of a generic message — this was
+      // previously swallowed into "try again" with the actual cause only
+      // visible in server logs, which made production failures impossible
+      // to debug from the client side.
       if (axios.isAxiosError(error)) {
-        console.error('[uploadMedia] Outstand upload failed:', error.response?.data || error.message)
-      } else {
-        console.error('[uploadMedia] Upload failed:', error)
+        const remoteData = error.response?.data
+        console.error('[uploadMedia] Outstand upload failed:', remoteData || error.message)
+        const reason =
+          (typeof remoteData === 'object' && remoteData !== null
+            ? remoteData.message || remoteData.error
+            : undefined) || error.message
+        throw new BadRequestException(`Media upload failed: ${reason}`)
       }
-      throw new InternalServerErrorException('Media upload failed — try again.')
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error('[uploadMedia] Upload failed:', error)
+      throw new BadRequestException(`Media upload failed: ${reason}`)
     }
   }
 

@@ -10,6 +10,8 @@ import {
   Param,
   UploadedFile,
   UseInterceptors,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Express } from 'express';
@@ -37,6 +39,7 @@ export class AutopostController {
   constructor(private readonly autopostService: AutopostService) {}
 
   @Post('connect')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   connectAccount(@Req() req, @Body() dto: ConnectAccountDto) {
     const userId = req.user.id;
@@ -47,12 +50,14 @@ export class AutopostController {
   // through in one call instead of the connect/callback dance every other
   // platform uses.
   @Post('connect/bluesky')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   connectBluesky(@Req() req, @Body() dto: ConnectBlueskyDto) {
     return this.autopostService.connectBlueskyDirect(req.user.id, dto.handle, dto.appPassword);
   }
 
   @Post('accounts')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   getMyAccounts(@Req() req) {
     return this.autopostService.getUserAccounts(req.user.id);
@@ -63,6 +68,7 @@ export class AutopostController {
   // Returns { url, filename } — drop `url` straight into publish/schedule's
   // mediaUrls.
   @Post('media/upload')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   @UseInterceptors(FileInterceptor('file'))
   async uploadMedia(@UploadedFile() file?: Express.Multer.File) {
@@ -109,11 +115,13 @@ export class AutopostController {
   }
 
   @Post('fix-accounts')
+  @HttpCode(HttpStatus.OK)
   async fixAccountPlatforms() {
     return this.autopostService.fixAccountPlatforms();
   }
 
   @Post('publish')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   publishPost(@Req() req, @Body() dto: PublishPostDto) {
     const userId = req.user.id;
@@ -121,6 +129,7 @@ export class AutopostController {
   }
 
   @Post('schedule')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   schedulePost(@Req() req, @Body() dto: SchedulePostDto) {
     const userId = req.user.id;
@@ -129,11 +138,13 @@ export class AutopostController {
 
   // Clear public route for Outstand to hit directly via webhook configurations
   @Post('webhook')
+  @HttpCode(HttpStatus.OK)
   webhookReceiver(@Body() payload: any) {
     return this.autopostService.handleIncomingWebhook(payload);
   }
 
   @Post('finalize-connection')
+  @HttpCode(HttpStatus.OK)
   async finalizeSocial(@Body() body: { sessionToken: string }) {
     if (!body.sessionToken) {
       throw new BadRequestException('Missing session token');
@@ -211,6 +222,7 @@ export class AutopostController {
   }
 
   @Post('handle-callback')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
   async handlePlatformCallback(
     @Req() req,
@@ -255,6 +267,7 @@ export class AutopostController {
 
   // 🔬 TEMPORARY TESTING ENDPOINT: Get all connected social accounts
   @Post('test-fetch-accounts')
+  @HttpCode(HttpStatus.OK)
   async getAllAccountsForTesting() {
     return this.autopostService.getAllAccountsDebug();
   }
@@ -264,6 +277,7 @@ export class AutopostController {
   // platform. Falls back to env vars (see NETWORK_ENV_CREDENTIALS) when the
   // request body omits key/secret.
   @Post('networks/configure')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   configureNetwork(@Body() body: { network: string; key?: string; secret?: string }) {
     const network = body.network?.toLowerCase();
