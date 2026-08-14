@@ -260,6 +260,18 @@ export class AutopostController {
       });
     }
 
+    // 🅲 FLOW C: USERNAME-ONLY (Threads) — Outstand's redirect for Threads
+    // doesn't include an account_id, only a human-readable success message
+    // with the username embedded in it. The frontend extracts that username
+    // and sends it here instead.
+    if (body.username && body.network) {
+      return this.autopostService.resolveAndSaveByUsername(
+        userId,
+        body.network,
+        body.username,
+      );
+    }
+
     throw new BadRequestException(
       'Invalid callback state parameters provided.',
     );

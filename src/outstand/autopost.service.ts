@@ -795,6 +795,34 @@ export class AutopostService {
     }
   }
 
+  // ── Threads' OAuth redirect doesn't hand back an account_id like X/YouTube
+  // do — it only returns a human-readable success message (e.g. "Threads
+  // account @handle connected successfully"), so the frontend has nothing
+  // to identify the account by except the username embedded in that text.
+  // This looks that username up against Outstand's own account list to
+  // recover the real outstandAccountId, then finishes the connection the
+  // same way saveDirectConnection() would.
+  async resolveAndSaveByUsername(userId: string, network: string, username: string) {
+    const response = await axios.get(`${this.outstandBaseUrl}/social-accounts`, {
+      headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+    })
+    const accounts: any[] = response.data?.data || []
+    const match = accounts.find(
+      (a) => a.network?.toLowerCase() === network.toLowerCase() && a.username?.toLowerCase() === username.toLowerCase(),
+    )
+
+    if (!match) {
+      throw new NotFoundException(`No ${network} account matching "${username}" found on Outstand.`)
+    }
+
+    return this.saveDirectConnection(userId, {
+      outstandAccountId: match.id,
+      networkUniqueId: match.network_unique_id ?? '',
+      username: match.username,
+      platform: network,
+    })
+  }
+
   // ── Bluesky has no OAuth step — unlike every other platform here, there's
   // no /connect redirect or callback. The handle + app password are
   // submitted straight to Outstand in one call, which creates the AT
