@@ -5,6 +5,8 @@ import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
 import { ChatQueryDto } from './dto/chat-query.dto'
 import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
+import { Cta } from './chatbot-flow.config'
+import { RedisService } from '../common/redis/redis.service'
 
 export interface AiUsageContext {
   userId?: string | null
@@ -46,6 +48,21 @@ export interface ChatResponse {
   answer: string
   confidence: 'high' | 'medium' | 'low'
   retrievedAt: string
+  cta: Cta | null
+}
+
+/**
+ * Scans the retrieved top-K (same set used to build the answer) for the
+ * first tagged link, rather than requiring rank #1 — similarity scores
+ * cluster tightly (~0.68-0.73), so an untagged near-duplicate doc can
+ * outrank a tagged one by a hair. No fallback CTA on untagged answers.
+ */
+function resolveCta(sources: RagDocumentWithScore[]): Cta | null {
+  const tagged = sources.find((s) => s.metadata?.link)
+  if (tagged) {
+    return { label: tagged.metadata.linkLabel ?? tagged.title, url: tagged.metadata.link }
+  }
+  return null
 }
 
 interface QueryRewrite {
@@ -65,14 +82,57 @@ const deepseek = new OpenAI({
 })
 const CHAT_MODEL = 'deepseek-chat'
 
+interface ChatTurn {
+  query: string
+  answer: string
+}
+
+const MAX_TURNS = 3 // last 3 exchanges = 6 messages
+const SESSION_TTL_SECONDS = 30 * 60 // idle sessions expire after 30 min
+const MAX_STORED_ANSWER_CHARS = 250 // caps what gets replayed as history — the full answer is still returned to the user this turn
+
+/**
+ * Redis-backed short-term chat history, keyed by sessionId. Survives
+ * restarts and works across multiple server instances, unlike a plain
+ * in-memory Map. TTL auto-evicts idle sessions instead of growing forever.
+ */
+class ConversationMemory {
+  constructor(private readonly redis: RedisService) {}
+
+  private key(sessionId: string): string {
+    return `rag:session:${sessionId}`
+  }
+
+  async getHistory(sessionId?: string): Promise<ChatTurn[]> {
+    if (!sessionId) return []
+    const raw = await this.redis.getClient().get(this.key(sessionId))
+    return raw ? JSON.parse(raw) : []
+  }
+
+  async addTurn(sessionId: string | undefined, query: string, answer: string): Promise<void> {
+    if (!sessionId) return
+    const turns = await this.getHistory(sessionId)
+    const storedAnswer = answer.length > MAX_STORED_ANSWER_CHARS
+      ? answer.slice(0, MAX_STORED_ANSWER_CHARS) + '…'
+      : answer
+    turns.push({ query, answer: storedAnswer })
+    if (turns.length > MAX_TURNS) turns.shift()
+    await this.redis.getClient().set(this.key(sessionId), JSON.stringify(turns), { EX: SESSION_TTL_SECONDS })
+  }
+}
+
 @Injectable()
 export class RagService {
   private readonly logger = new Logger(RagService.name)
+  private readonly conversationMemory: ConversationMemory
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiUsageLogService: AiUsageLogService,
-  ) {}
+    private readonly redis: RedisService,
+  ) {
+    this.conversationMemory = new ConversationMemory(this.redis)
+  }
 
   async embedText(text: string, context?: AiUsageContext): Promise<number[]> {
     try {
@@ -101,7 +161,7 @@ export class RagService {
 
   async indexDocument(dto: UploadDocumentDto, context?: AiUsageContext): Promise<IndexResult> {
     try {
-      const embedding = await this.embedText(dto.content, context)
+      const embedding = await this.embedText(`${dto.title}\n${dto.content}`, context)
       const vectorStr = `[${embedding.join(',')}]`
 
       const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
@@ -234,13 +294,19 @@ JSON only:
     const contextUsed = sources.length > 0
     const contextBlock = sources.map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`).join('\n\n---\n\n')
 
+    const history = await this.conversationMemory.getHistory(dto.sessionId)
+    const historyBlock = history.length > 0
+      ? `Previous conversation (most recent last):\n${history.map((t) => `User: ${t.query}\nAssistant: ${t.answer}`).join('\n')}\n\n`
+      : ''
+
     const prompt = `You are ShoutlyAI's support assistant. Never mention "context"/"documents" — answer naturally, first person.
 
-${contextUsed ? `Reference:\n${contextBlock}` : 'No reference material found for this question.'}
+${historyBlock}${contextUsed ? `Reference:\n${contextBlock}` : 'No reference material found for this question.'}
 
 Question: ${dto.query}
 
 Rules:
+- Use the previous conversation (if any) to resolve follow-ups/pronouns (e.g. "it", "that plan") — don't ask the user to repeat themselves.
 - Greeting/small talk → reply warmly as ShoutlyAI's assistant, no reference needed.
 - Else: use ONLY the reference above, never invent facts.
 - Reply only in ${language} — short, plain, human words, no em dashes (—).
@@ -282,12 +348,15 @@ JSON only:
 
       this.logger.log(`[chat] final answer (confidence: ${parsed.confidence}): "${parsed.answer}"`)
 
+      await this.conversationMemory.addTurn(dto.sessionId, dto.query, parsed.answer)
+
       return {
         success: true,
         query: dto.query,
         answer: parsed.answer,
         confidence: parsed.confidence,
         retrievedAt: new Date().toISOString(),
+        cta: resolveCta(sources),
       }
     } catch (error: any) {
       this.logger.error(`[chat] chat generation failed: ${error.message}`)
@@ -310,14 +379,20 @@ JSON only:
 
     const contextBlock = top2.map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`).join('\n\n---\n\n')
 
+    const history = await this.conversationMemory.getHistory(dto.sessionId)
+    const historyBlock = history.length > 0
+      ? `Previous conversation (most recent last):\n${history.map((t) => `User: ${t.query}\nAssistant: ${t.answer}`).join('\n')}\n\n`
+      : ''
+
     const prompt = `You are ShoutlyAI's support assistant. Never mention "context"/"documents" — answer naturally, first person.
 
-Reference:
+${historyBlock}Reference:
 ${contextBlock}
 
 Question: ${dto.query}
 
 Rules:
+- Use the previous conversation (if any) to resolve follow-ups/pronouns (e.g. "it", "that plan") — don't ask the user to repeat themselves.
 - Greeting/small talk → reply warmly as ShoutlyAI's assistant, no reference needed.
 - Else: use ONLY the reference above, never invent facts.
 - Reply only in ${language} — short, plain, human words, no em dashes (—).
@@ -359,6 +434,10 @@ Rules:
     }
 
     this.logger.log(`[streamChat] final answer: "${fullAnswer}"`)
+
+    await this.conversationMemory.addTurn(dto.sessionId, dto.query, fullAnswer)
+
+    yield `data: ${JSON.stringify({ meta: { cta: resolveCta(sources) } })}\n\n`
     yield `data: [DONE]\n\n`
   }
 
@@ -416,7 +495,7 @@ Rules:
     const newContent = dto.content ?? current.content
     const newMetadata = dto.metadata ?? (typeof current.metadata === 'string' ? JSON.parse(current.metadata) : current.metadata)
 
-    const embedding = await this.embedText(newContent, context)
+    const embedding = await this.embedText(`${newTitle}\n${newContent}`, context)
     const vectorStr = `[${embedding.join(',')}]`
 
     const rows = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(

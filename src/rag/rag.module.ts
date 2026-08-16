@@ -4,9 +4,10 @@ import { RagController } from './rag.controller'
 import { PrismaService } from '../lib/prisma.service'
 import { AuthModule } from '../auth/auth.module'
 import { AiUsageLogModule } from '../ai-usage/ai-usage-log.module'
+import { RedisModule } from '../common/redis/redis.module'
 
 @Module({
-  imports: [AuthModule, AiUsageLogModule],
+  imports: [AuthModule, AiUsageLogModule, RedisModule],
   providers: [RagService, PrismaService],
   controllers: [RagController],
   exports: [RagService],

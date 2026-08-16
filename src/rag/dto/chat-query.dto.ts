@@ -10,4 +10,9 @@ export class ChatQueryDto {
   @Max(10)
   @IsOptional()
   topK?: number = 5
+
+  /** Groups turns for short-term memory (last 3 exchanges). Omit for a stateless call. */
+  @IsString()
+  @IsOptional()
+  sessionId?: string
 }
