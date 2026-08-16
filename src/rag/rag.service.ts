@@ -348,7 +348,10 @@ JSON only:
 
       this.logger.log(`[chat] final answer (confidence: ${parsed.confidence}): "${parsed.answer}"`)
 
-      await this.conversationMemory.addTurn(dto.sessionId, dto.query, parsed.answer)
+      // Fire-and-forget — don't make the user wait on a Redis write that only benefits future turns.
+      this.conversationMemory
+        .addTurn(dto.sessionId, dto.query, parsed.answer)
+        .catch((err) => this.logger.warn(`[chat] failed to save session history: ${err.message}`))
 
       return {
         success: true,
@@ -435,7 +438,10 @@ Rules:
 
     this.logger.log(`[streamChat] final answer: "${fullAnswer}"`)
 
-    await this.conversationMemory.addTurn(dto.sessionId, dto.query, fullAnswer)
+    // Fire-and-forget — don't make the user wait on a Redis write that only benefits future turns.
+    this.conversationMemory
+      .addTurn(dto.sessionId, dto.query, fullAnswer)
+      .catch((err) => this.logger.warn(`[streamChat] failed to save session history: ${err.message}`))
 
     yield `data: ${JSON.stringify({ meta: { cta: resolveCta(sources) } })}\n\n`
     yield `data: [DONE]\n\n`
