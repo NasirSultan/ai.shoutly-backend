@@ -20,6 +20,7 @@
 import { IsArray, IsNotEmpty, IsOptional, IsString, IsUrl, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { YoutubeOptionsDto } from './youtube-options.dto';
+import { PinterestOptionsDto } from './pinterest-options.dto';
 
 export class PublishPostDto {
   @IsString()
@@ -42,4 +43,11 @@ export class PublishPostDto {
   @Type(() => YoutubeOptionsDto)
   @IsOptional()
   youtube?: YoutubeOptionsDto;
+
+  // Required when "pinterest" is included in platforms — every Pin needs a
+  // board_id, Outstand rejects the post otherwise.
+  @ValidateNested()
+  @Type(() => PinterestOptionsDto)
+  @IsOptional()
+  pinterest?: PinterestOptionsDto;
 }

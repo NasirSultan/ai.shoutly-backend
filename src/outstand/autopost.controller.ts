@@ -102,6 +102,27 @@ export class AutopostController {
     return this.autopostService.disconnectAccount(req.user.id, id);
   }
 
+  // Pinterest requires every Pin to belong to a board — these let the
+  // frontend list a connected account's existing boards (to populate a
+  // picker) or create a new one, before calling /autopost/publish with
+  // pinterest.boardId. :id is our internal SocialAccount.id, scoped to the
+  // logged-in user, same as disconnectAccount above.
+  @Get('accounts/:id/pinterest/boards')
+  @UseGuards(AuthGuard)
+  listPinterestBoards(@Req() req, @Param('id') id: string) {
+    return this.autopostService.listPinterestBoards(req.user.id, id);
+  }
+
+  @Post('accounts/:id/pinterest/boards')
+  @UseGuards(AuthGuard)
+  createPinterestBoard(
+    @Req() req,
+    @Param('id') id: string,
+    @Body() body: { name: string; privacy?: string; description?: string },
+  ) {
+    return this.autopostService.createPinterestBoard(req.user.id, id, body);
+  }
+
   @Delete('posts/:id')
   @UseGuards(AuthGuard)
   deletePost(@Req() req, @Param('id') id: string) {

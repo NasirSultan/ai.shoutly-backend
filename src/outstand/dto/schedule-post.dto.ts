@@ -25,6 +25,7 @@
 import { IsArray, IsDateString, IsNotEmpty, IsOptional, IsString, IsUrl, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { YoutubeOptionsDto } from './youtube-options.dto';
+import { PinterestOptionsDto } from './pinterest-options.dto';
 
 export class ScheduledPostItemDto {
   @IsString()
@@ -46,6 +47,13 @@ export class ScheduledPostItemDto {
   @Type(() => YoutubeOptionsDto)
   @IsOptional()
   youtube?: YoutubeOptionsDto;
+
+  // Required when "pinterest" is included in platforms — every scheduled
+  // Pin needs its own board_id.
+  @ValidateNested()
+  @Type(() => PinterestOptionsDto)
+  @IsOptional()
+  pinterest?: PinterestOptionsDto;
 }
 
 export class SchedulePostDto {

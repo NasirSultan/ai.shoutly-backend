@@ -279,6 +279,14 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file — pass its URL in mediaUrls.');
     }
 
+    // Same story for Pinterest — every Pin has to belong to a board, and
+    // Outstand rejects the post with no way to recover once it's already
+    // been sent. Fetch the account's boards first via
+    // GET /v1/pinterest/accounts/:id/boards if you don't have a board_id yet.
+    if (platforms.includes('PINTEREST') && !dto.pinterest?.boardId) {
+      throw new BadRequestException('Pinterest requires a board — pass pinterest.boardId.');
+    }
+
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
@@ -320,6 +328,16 @@ export class AutopostService {
           accounts: outstandAccountIds,
           containers: [container],
           ...(dto.youtube ? { youtube: dto.youtube } : {}),
+          ...(dto.pinterest
+            ? {
+                pinterest: {
+                  board_id: dto.pinterest.boardId,
+                  ...(dto.pinterest.link ? { link: dto.pinterest.link } : {}),
+                  ...(dto.pinterest.title ? { title: dto.pinterest.title } : {}),
+                  ...(dto.pinterest.altText ? { alt_text: dto.pinterest.altText } : {}),
+                },
+              }
+            : {}),
         },
         {
           headers: {
@@ -381,6 +399,10 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
     }
 
+    if (platforms.includes('PINTEREST') && dto.posts.some((p) => !p.pinterest?.boardId)) {
+      throw new BadRequestException('Pinterest requires a board for every scheduled post — pass pinterest.boardId.');
+    }
+
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
@@ -440,6 +462,15 @@ export class AutopostService {
 
         if (postItem.youtube) {
           payload.youtube = postItem.youtube;
+        }
+
+        if (postItem.pinterest) {
+          payload.pinterest = {
+            board_id: postItem.pinterest.boardId,
+            ...(postItem.pinterest.link ? { link: postItem.pinterest.link } : {}),
+            ...(postItem.pinterest.title ? { title: postItem.pinterest.title } : {}),
+            ...(postItem.pinterest.altText ? { alt_text: postItem.pinterest.altText } : {}),
+          };
         }
 
         // Fire to Outstand
@@ -864,6 +895,52 @@ export class AutopostService {
       username: accountData.username || accountData.nickname || cleanHandle,
       platform: 'bluesky',
     })
+  }
+
+  // ── Pinterest boards — every Pin needs a board_id (see publishImmediately
+  // and the PINTEREST check there). :id is our internal SocialAccount.id;
+  // resolved to Outstand's account id and ownership-checked the same way
+  // disconnectAccount() does below.
+  async listPinterestBoards(userId: string, socialAccountId: string) {
+    const account = await this.prisma.socialAccount.findFirst({
+      where: { id: socialAccountId, userId, platform: 'PINTEREST' },
+    })
+    if (!account) {
+      throw new NotFoundException('Pinterest account not found or not owned by this user.')
+    }
+
+    const response = await axios.get(
+      `${this.outstandBaseUrl}/pinterest/accounts/${account.outstandAccountId}/boards`,
+      { headers: { Authorization: `Bearer ${this.outstandApiKey}` } },
+    )
+    return { success: true, boards: response.data?.data ?? [] }
+  }
+
+  async createPinterestBoard(
+    userId: string,
+    socialAccountId: string,
+    details: { name: string; privacy?: string; description?: string },
+  ) {
+    const account = await this.prisma.socialAccount.findFirst({
+      where: { id: socialAccountId, userId, platform: 'PINTEREST' },
+    })
+    if (!account) {
+      throw new NotFoundException('Pinterest account not found or not owned by this user.')
+    }
+    if (!details.name?.trim()) {
+      throw new BadRequestException('Board name is required.')
+    }
+
+    const response = await axios.post(
+      `${this.outstandBaseUrl}/pinterest/accounts/${account.outstandAccountId}/boards`,
+      {
+        name: details.name.trim(),
+        privacy: details.privacy || 'PUBLIC',
+        ...(details.description ? { description: details.description } : {}),
+      },
+      { headers: { Authorization: `Bearer ${this.outstandApiKey}`, 'Content-Type': 'application/json' } },
+    )
+    return { success: true, board: response.data?.data ?? response.data }
   }
 
   // ── Disconnects a social account: removes it on Outstand's side, deletes
