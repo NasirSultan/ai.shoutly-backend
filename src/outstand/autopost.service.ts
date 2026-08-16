@@ -94,7 +94,7 @@ export class AutopostService {
   // ── Used by the accounts page to know what's connected vs not ──
   async getConnectionStatus(userId: string) {
     const accounts = await this.prisma.$queryRaw<any[]>`
-      SELECT id, "outstandAccountId", platform, username, status, "avatarUrl", "updatedAt"
+      SELECT id, "outstandAccountId", platform, username, status, "avatarUrl", "updatedAt", "defaultBoardId", "defaultBoardName"
       FROM "SocialAccount"
       WHERE "userId" = ${userId}
     `;
@@ -134,6 +134,9 @@ export class AutopostService {
             avatarUrl: acc.avatarUrl,
             status: acc.status,
             lastSync: acc.updatedAt,
+            // Pinterest only — null for every other platform.
+            defaultBoardId: acc.defaultBoardId,
+            defaultBoardName: acc.defaultBoardName,
           },
         ],
       };
