@@ -246,6 +246,19 @@ JSON only:
     }
   }
 
+  /** Pure-ASCII text is very likely already clean English — non-ASCII always needs rewriteQuery for translation. */
+  private isLikelyCleanEnglish(query: string): boolean {
+    return /^[\x00-\x7F]*$/.test(query)
+  }
+
+  /** Skips the DeepSeek rewrite call for already-clean English input — saves ~1-2s on the common case. */
+  private async resolveQuery(query: string): Promise<QueryRewrite> {
+    if (this.isLikelyCleanEnglish(query)) {
+      return { language: 'English', rewrittenQuery: query.trim() }
+    }
+    return this.rewriteQuery(query)
+  }
+
   async searchSimilar(query: string, topK = 5, excludeCategories: string[] = []): Promise<RagDocumentWithScore[]> {
     const embedding = await this.embedText(this.normalizeQuery(query))
     const vectorStr = `[${embedding.join(',')}]`
@@ -282,7 +295,10 @@ JSON only:
     const topK = dto.topK ?? 5
     this.logger.log(`[chat] query received: "${dto.query}"`)
 
-    const { language, rewrittenQuery } = await this.rewriteQuery(dto.query)
+    const [{ language, rewrittenQuery }, history] = await Promise.all([
+      this.resolveQuery(dto.query),
+      this.conversationMemory.getHistory(dto.sessionId),
+    ])
     this.logger.log(`[chat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`)
 
     const sources = await this.searchSimilar(rewrittenQuery, topK, ['greeting'])
@@ -294,7 +310,6 @@ JSON only:
     const contextUsed = sources.length > 0
     const contextBlock = sources.map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`).join('\n\n---\n\n')
 
-    const history = await this.conversationMemory.getHistory(dto.sessionId)
     const historyBlock = history.length > 0
       ? `Previous conversation (most recent last):\n${history.map((t) => `User: ${t.query}\nAssistant: ${t.answer}`).join('\n')}\n\n`
       : ''
@@ -370,7 +385,10 @@ JSON only:
   async *streamChat(dto: ChatQueryDto): AsyncGenerator<string> {
     this.logger.log(`[streamChat] query received: "${dto.query}"`)
 
-    const { language, rewrittenQuery } = await this.rewriteQuery(dto.query)
+    const [{ language, rewrittenQuery }, history] = await Promise.all([
+      this.resolveQuery(dto.query),
+      this.conversationMemory.getHistory(dto.sessionId),
+    ])
     this.logger.log(`[streamChat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`)
 
     const sources = await this.searchSimilar(rewrittenQuery, dto.topK ?? 5, ['greeting'])
@@ -381,8 +399,6 @@ JSON only:
     )
 
     const contextBlock = top2.map((s, i) => `[${i + 1}] "${s.title}"\n${s.content}`).join('\n\n---\n\n')
-
-    const history = await this.conversationMemory.getHistory(dto.sessionId)
     const historyBlock = history.length > 0
       ? `Previous conversation (most recent last):\n${history.map((t) => `User: ${t.query}\nAssistant: ${t.answer}`).join('\n')}\n\n`
       : ''
