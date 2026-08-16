@@ -7,7 +7,8 @@ import { ChatQueryDto } from './dto/chat-query.dto'
 import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 import { Cta } from './chatbot-flow.config'
 import { RedisService } from '../common/redis/redis.service'
-
+import { franc } from 'franc'
+const searchStart = Date.now()
 export interface AiUsageContext {
   userId?: string | null
 }
@@ -207,60 +208,128 @@ export class RagService {
     return query.replace(/[-_/\\|]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase()
   }
 
-  private async rewriteQuery(query: string): Promise<QueryRewrite> {
-    const prompt = `Detect the language+script of this message, then write the same question correctly in English (fix typos, translate faithfully, do not add or change intent).
+ private isLikelyCleanEnglish(query: string): boolean {
+  const text = query.trim()
 
-Message: "${query}"
+  if (!text || text.length < 10) return false
 
-JSON only:
-{"language":"<language and script, e.g. Roman Urdu (Latin script)>","rewrittenQuery":"<clear english query>"}`
+  const detectedLanguage = franc(text, {
+    minLength: 10,
+  })
 
-    try {
-      const completion = await deepseek.chat.completions.create({
-        model: CHAT_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-        max_tokens: 150,
-      })
+  return detectedLanguage === 'eng'
+}
 
-      this.aiUsageLogService.logText({
-        userId: null,
-        provider: 'DEEPSEEK',
-        model: CHAT_MODEL,
-        operation: 'CHAT',
-        promptTokens: completion.usage?.prompt_tokens ?? 0,
-        completionTokens: completion.usage?.completion_tokens ?? 0,
-        metadata: { step: 'query_rewrite' },
-      })
+private async rewriteQuery(query: string): Promise<QueryRewrite> {
+  const prompt = `Analyze the original user message.
 
-      const raw = (completion.choices[0]?.message?.content ?? '').trim()
-      const jsonMatch = raw.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) throw new Error('No JSON in rewrite response')
+Your job is to return two things:
 
-      const parsed: QueryRewrite = JSON.parse(jsonMatch[0])
-      if (!parsed.rewrittenQuery) throw new Error('Empty rewrittenQuery')
-      return parsed
-    } catch (error: any) {
-      this.logger.warn(`Query rewrite failed, falling back to original query: ${error.message}`)
-      return { language: 'English', rewrittenQuery: query }
+1. Detect the language and script of the ORIGINAL message.
+2. Rewrite the ORIGINAL message into clear English for RAG search.
+
+Important rules:
+- Do not assume Latin/ASCII text is English.
+- Roman Urdu written with Latin letters is Roman Urdu, not English.
+- Preserve the user's exact meaning and intent.
+- Do not add information.
+- rewrittenQuery must always be English.
+- language must describe the language and script of the ORIGINAL message.
+- The language value will be used to generate the final answer.
+
+Examples:
+
+User: "shoutly ai key bray main bta ho"
+Result:
+{"language":"Roman Urdu (Latin script)","rewrittenQuery":"Tell me about ShoutlyAI."}
+
+User: "shoutly ai ke bare mein batao"
+Result:
+{"language":"Roman Urdu (Latin script)","rewrittenQuery":"Tell me about ShoutlyAI."}
+
+User: "شوٹلی اے آئی کے بارے میں بتائیں"
+Result:
+{"language":"Urdu (Arabic script)","rewrittenQuery":"Tell me about ShoutlyAI."}
+
+User: "What is ShoutlyAI?"
+Result:
+{"language":"English (Latin script)","rewrittenQuery":"What is ShoutlyAI?"}
+
+Original user message:
+"${query}"
+
+Return JSON only:
+{"language":"<original language and script>","rewrittenQuery":"<clear English query>"}`
+
+  try {
+    const completion = await deepseek.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0,
+      max_tokens: 150,
+    })
+
+    this.aiUsageLogService.logText({
+      userId: null,
+      provider: 'DEEPSEEK',
+      model: CHAT_MODEL,
+      operation: 'CHAT',
+      promptTokens: completion.usage?.prompt_tokens ?? 0,
+      completionTokens: completion.usage?.completion_tokens ?? 0,
+      metadata: { step: 'query_rewrite' },
+    })
+
+    const raw = (completion.choices[0]?.message?.content ?? '').trim()
+    const jsonMatch = raw.match(/\{[\s\S]*\}/)
+
+    if (!jsonMatch) {
+      throw new Error('No JSON in rewrite response')
+    }
+
+    const parsed: QueryRewrite = JSON.parse(jsonMatch[0])
+
+    if (!parsed.language) {
+      throw new Error('Empty language')
+    }
+
+    if (!parsed.rewrittenQuery) {
+      throw new Error('Empty rewrittenQuery')
+    }
+
+    return {
+      language: parsed.language,
+      rewrittenQuery: parsed.rewrittenQuery.trim(),
+    }
+  } catch (error: any) {
+    this.logger.warn(
+      `Query rewrite failed, falling back to original query: ${error.message}`,
+    )
+
+    return {
+      language: 'English (Latin script)',
+      rewrittenQuery: query.trim(),
     }
   }
+}
+
+private async resolveQuery(query: string): Promise<QueryRewrite> {
+  const normalizedQuery = query.trim()
+
+  if (this.isLikelyCleanEnglish(normalizedQuery)) {
+    return {
+      language: 'English (Latin script)',
+      rewrittenQuery: normalizedQuery,
+    }
+  }
+
+  return this.rewriteQuery(normalizedQuery)
+}
 
   /** Pure-ASCII text is very likely already clean English — non-ASCII always needs rewriteQuery for translation. */
-  private isLikelyCleanEnglish(query: string): boolean {
-    return /^[\x00-\x7F]*$/.test(query)
-  }
 
-  /** Skips the DeepSeek rewrite call for already-clean English input — saves ~1-2s on the common case. */
-  private async resolveQuery(query: string): Promise<QueryRewrite> {
-    if (this.isLikelyCleanEnglish(query)) {
-      return { language: 'English', rewrittenQuery: query.trim() }
-    }
-    return this.rewriteQuery(query)
-  }
 
-  async searchSimilar(query: string, topK = 5, excludeCategories: string[] = []): Promise<RagDocumentWithScore[]> {
-    const embedding = await this.embedText(this.normalizeQuery(query))
+  async searchSimilar(query: string, topK = 5, excludeCategories: string[] = [] ): Promise<RagDocumentWithScore[]> {
+    const embedding = await this.embedText(this.normalizeQuery(query)) 
     const vectorStr = `[${embedding.join(',')}]`
     const limit = Math.max(1, Math.min(10, topK))
 
