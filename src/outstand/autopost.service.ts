@@ -279,14 +279,6 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file — pass its URL in mediaUrls.');
     }
 
-    // Same story for Pinterest — every Pin has to belong to a board, and
-    // Outstand rejects the post with no way to recover once it's already
-    // been sent. Fetch the account's boards first via
-    // GET /v1/pinterest/accounts/:id/boards if you don't have a board_id yet.
-    if (platforms.includes('PINTEREST') && !dto.pinterest?.boardId) {
-      throw new BadRequestException('Pinterest requires a board — pass pinterest.boardId.');
-    }
-
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
@@ -299,6 +291,22 @@ export class AutopostService {
     }
 
     const outstandAccountIds = verifiedAccounts.map((acc) => acc.outstandAccountId);
+
+    // Every Pin has to belong to a board. Use an explicitly-passed
+    // pinterest.boardId if given; otherwise fall back to whichever board
+    // the user picked/created right after connecting (saved as
+    // defaultBoardId — see selectPinterestBoard/createPinterestBoard).
+    let effectivePinterest = dto.pinterest;
+    if (platforms.includes('PINTEREST') && !effectivePinterest?.boardId) {
+      const pinterestAccount = verifiedAccounts.find((a) => a.platform === 'PINTEREST');
+      if (pinterestAccount?.defaultBoardId) {
+        effectivePinterest = { ...effectivePinterest, boardId: pinterestAccount.defaultBoardId };
+      } else {
+        throw new BadRequestException(
+          'Pinterest requires a board — pass pinterest.boardId, or select/create a default board first via POST /autopost/accounts/:id/pinterest/default-board.',
+        );
+      }
+    }
 
     // 2. Create post record
     const postRecord = await this.prisma.post.create({
@@ -328,13 +336,13 @@ export class AutopostService {
           accounts: outstandAccountIds,
           containers: [container],
           ...(dto.youtube ? { youtube: dto.youtube } : {}),
-          ...(dto.pinterest
+          ...(effectivePinterest
             ? {
                 pinterest: {
-                  board_id: dto.pinterest.boardId,
-                  ...(dto.pinterest.link ? { link: dto.pinterest.link } : {}),
-                  ...(dto.pinterest.title ? { title: dto.pinterest.title } : {}),
-                  ...(dto.pinterest.altText ? { alt_text: dto.pinterest.altText } : {}),
+                  board_id: effectivePinterest.boardId,
+                  ...(effectivePinterest.link ? { link: effectivePinterest.link } : {}),
+                  ...(effectivePinterest.title ? { title: effectivePinterest.title } : {}),
+                  ...(effectivePinterest.altText ? { alt_text: effectivePinterest.altText } : {}),
                 },
               }
             : {}),
@@ -399,22 +407,29 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
     }
 
-    if (platforms.includes('PINTEREST') && dto.posts.some((p) => !p.pinterest?.boardId)) {
-      throw new BadRequestException('Pinterest requires a board for every scheduled post — pass pinterest.boardId.');
-    }
-
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
         platform: { in: platforms },
       },
     });
-    
+
     if (!verifiedAccounts.length) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
     const outstandAccountIds = verifiedAccounts.map((acc) => acc.outstandAccountId);
+
+    // Same default-board fallback as publishImmediately — each scheduled
+    // post can still override with its own pinterest.boardId if it wants a
+    // different board than the account's default.
+    const pinterestAccount = verifiedAccounts.find((a) => a.platform === 'PINTEREST');
+    if (platforms.includes('PINTEREST') && !pinterestAccount?.defaultBoardId
+        && dto.posts.some((p) => !p.pinterest?.boardId)) {
+      throw new BadRequestException(
+        'Pinterest requires a board for every scheduled post — pass pinterest.boardId, or select/create a default board first via POST /autopost/accounts/:id/pinterest/default-board.',
+      );
+    }
 
     // 2. Process each post independently
     const results = await Promise.allSettled(
@@ -464,12 +479,13 @@ export class AutopostService {
           payload.youtube = postItem.youtube;
         }
 
-        if (postItem.pinterest) {
+        const effectiveBoardId = postItem.pinterest?.boardId ?? pinterestAccount?.defaultBoardId;
+        if (effectiveBoardId) {
           payload.pinterest = {
-            board_id: postItem.pinterest.boardId,
-            ...(postItem.pinterest.link ? { link: postItem.pinterest.link } : {}),
-            ...(postItem.pinterest.title ? { title: postItem.pinterest.title } : {}),
-            ...(postItem.pinterest.altText ? { alt_text: postItem.pinterest.altText } : {}),
+            board_id: effectiveBoardId,
+            ...(postItem.pinterest?.link ? { link: postItem.pinterest.link } : {}),
+            ...(postItem.pinterest?.title ? { title: postItem.pinterest.title } : {}),
+            ...(postItem.pinterest?.altText ? { alt_text: postItem.pinterest.altText } : {}),
           };
         }
 
@@ -940,7 +956,42 @@ export class AutopostService {
       },
       { headers: { Authorization: `Bearer ${this.outstandApiKey}`, 'Content-Type': 'application/json' } },
     )
-    return { success: true, board: response.data?.data ?? response.data }
+    const board = response.data?.data ?? response.data
+
+    // Creating a board strongly implies "use this one" — save it as the
+    // default immediately so the caller doesn't have to make a second call.
+    await this.prisma.socialAccount.update({
+      where: { id: account.id },
+      data: { defaultBoardId: board.id, defaultBoardName: board.name },
+    })
+
+    return { success: true, board }
+  }
+
+  // Sets an existing board (from listPinterestBoards) as the account's
+  // default — used automatically by publishImmediately/scheduleForLater
+  // whenever a post doesn't specify pinterest.boardId itself.
+  async selectPinterestBoard(
+    userId: string,
+    socialAccountId: string,
+    board: { boardId: string; boardName?: string },
+  ) {
+    const account = await this.prisma.socialAccount.findFirst({
+      where: { id: socialAccountId, userId, platform: 'PINTEREST' },
+    })
+    if (!account) {
+      throw new NotFoundException('Pinterest account not found or not owned by this user.')
+    }
+    if (!board.boardId) {
+      throw new BadRequestException('boardId is required.')
+    }
+
+    await this.prisma.socialAccount.update({
+      where: { id: account.id },
+      data: { defaultBoardId: board.boardId, defaultBoardName: board.boardName },
+    })
+
+    return { success: true, defaultBoardId: board.boardId, defaultBoardName: board.boardName }
   }
 
   // ── Disconnects a social account: removes it on Outstand's side, deletes

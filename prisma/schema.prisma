@@ -324,6 +324,12 @@ model SocialAccount {
   username          String?
   avatarUrl         String?
   status            String         @default("active")
+  // Pinterest only — every Pin needs a board_id, so once the user picks
+  // (or creates) a board after connecting, it's saved here and reused
+  // automatically on every publish/schedule call unless one is explicitly
+  // overridden per-post.
+  defaultBoardId    String?
+  defaultBoardName  String?
   deliveries        PostDelivery[]
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt

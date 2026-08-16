@@ -123,6 +123,19 @@ export class AutopostController {
     return this.autopostService.createPinterestBoard(req.user.id, id, body);
   }
 
+  // Sets an existing board (from the GET above) as the account's default —
+  // used automatically on every future publish/schedule call unless a post
+  // explicitly overrides it with its own pinterest.boardId.
+  @Post('accounts/:id/pinterest/default-board')
+  @UseGuards(AuthGuard)
+  selectPinterestBoard(
+    @Req() req,
+    @Param('id') id: string,
+    @Body() body: { boardId: string; boardName?: string },
+  ) {
+    return this.autopostService.selectPinterestBoard(req.user.id, id, body);
+  }
+
   @Delete('posts/:id')
   @UseGuards(AuthGuard)
   deletePost(@Req() req, @Param('id') id: string) {
