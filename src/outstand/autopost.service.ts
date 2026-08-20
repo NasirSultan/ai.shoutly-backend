@@ -567,27 +567,35 @@ export class AutopostService {
   }
   
   // 🅰️ Logic for Facebook's intermediate validation step
-  async finalizeTwoStepConnection(userId: string, sessionToken: string) {
+  // Lists the pages Facebook granted access to for this session, WITHOUT
+  // connecting any of them — lets the frontend show a real picker instead
+  // of us guessing. Call this first; the user's choice from here is what
+  // gets passed to finalizeTwoStepConnection() below.
+  async getPendingConnection(sessionToken: string) {
+    const pendingResponse = await fetch(`${this.outstandBaseUrl}/social-accounts/pending/${sessionToken}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${this.outstandApiKey}` }
+    });
+    if (!pendingResponse.ok) throw new BadRequestException('Invalid or expired Outstand session token.');
+
+    const resBody = await pendingResponse.json();
+    const availablePages = resBody?.data?.availablePages || [];
+    if (availablePages.length === 0) throw new BadRequestException('No authorized Facebook pages found for this session.');
+
+    return { success: true, availablePages };
+  }
+
+  // Connects only the pages the user actually chose (selectedPageIds) —
+  // must come from the caller, resolved via getPendingConnection() above
+  // plus real user input. Previously this silently connected EVERY page
+  // Facebook granted, with no way for the user to pick just one, which is
+  // exactly the "no selection screen ever shows" bug this replaces.
+  async finalizeTwoStepConnection(userId: string, sessionToken: string, selectedPageIds: string[]) {
+    if (!selectedPageIds || selectedPageIds.length === 0) {
+      throw new BadRequestException('selectedPageIds is required — call GET pending first and let the user choose.');
+    }
     try {
-      // 1. Fetch pending pages from Outstand
-      const pendingResponse = await fetch(`${this.outstandBaseUrl}/social-accounts/pending/${sessionToken}`, { 
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${this.outstandApiKey}` }
-      });
-      if (!pendingResponse.ok) throw new BadRequestException('Invalid or expired Outstand session token.');
-
-      const resBody = await pendingResponse.json();
-      const availablePages = resBody?.data?.availablePages || [];
-      if (availablePages.length === 0) throw new BadRequestException('No authorized Facebook pages found.');
-
-      const selectedPageIds = availablePages.map((page: any) => page.id);
-
-      // 2. Finalize with Outstand
-      // Inside your autopost.service.ts -> finalizeTwoStepConnection method:
-
-      // 2. Finalize with Outstand
-    // 2. Finalize with Outstand
-    const finalizeResponse = await fetch(`${this.outstandBaseUrl}/social-accounts/pending/${sessionToken}/finalize`, {
+      const finalizeResponse = await fetch(`${this.outstandBaseUrl}/social-accounts/pending/${sessionToken}/finalize`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.outstandApiKey}`,

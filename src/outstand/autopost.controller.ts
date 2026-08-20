@@ -56,6 +56,16 @@ export class AutopostController {
     return this.autopostService.connectBlueskyDirect(req.user.id, dto.handle, dto.appPassword);
   }
 
+  // Facebook (and other multi-page platforms) two-step flow, part 1: list
+  // the pages available for this session WITHOUT connecting any of them,
+  // so the frontend can show the user a real picker. Call this when the
+  // OAuth callback arrives with ?session=<token> instead of account_id.
+  @Get('pending/:sessionToken')
+  @UseGuards(AuthGuard)
+  getPendingConnection(@Param('sessionToken') sessionToken: string) {
+    return this.autopostService.getPendingConnection(sessionToken);
+  }
+
   @Post('accounts')
   @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
@@ -177,42 +187,30 @@ export class AutopostController {
     return this.autopostService.handleIncomingWebhook(payload);
   }
 
+  // Legacy standalone endpoint — kept for backward compatibility, but does
+  // NOT save anything to our database (unlike handle-callback below), so
+  // an account "connected" through this path won't show up anywhere in
+  // our app. Prefer POST /autopost/handle-callback with a sessionToken for
+  // any new integration work.
   @Post('finalize-connection')
   @HttpCode(HttpStatus.OK)
-  async finalizeSocial(@Body() body: { sessionToken: string }) {
+  async finalizeSocial(@Body() body: { sessionToken: string; selectedPageIds?: string[] }) {
     if (!body.sessionToken) {
       throw new BadRequestException('Missing session token');
+    }
+    // Must come from the user's actual choice (call GET pending/:sessionToken
+    // first) — previously this silently connected every page Facebook
+    // granted, with no selection step at all.
+    if (!body.selectedPageIds || body.selectedPageIds.length === 0) {
+      throw new BadRequestException('selectedPageIds is required — call GET pending/:sessionToken first and let the user choose.');
     }
 
     const outstandApiKey =
       'ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta';
     const outstandBaseUrl = 'https://api.outstand.so/v1';
+    const selectedPageIds = body.selectedPageIds;
 
     try {
-      const pendingUrl = `${outstandBaseUrl}/social-accounts/pending/${body.sessionToken}`;
-      const pendingResponse = await fetch(pendingUrl, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${outstandApiKey}` },
-      });
-
-      if (!pendingResponse.ok) {
-        throw new BadRequestException(
-          'Invalid or expired Outstand session token.',
-        );
-      }
-
-      const resBody = await pendingResponse.json();
-      const availablePages = resBody?.data?.availablePages;
-
-      if (!Array.isArray(availablePages) || availablePages.length === 0) {
-        throw new BadRequestException(
-          'No authorized Facebook pages found inside this session.',
-        );
-      }
-
-      // CORRECT FORMAT: Outstand validator strictly requires a flat array of string IDs
-      const selectedPageIds = availablePages.map((page: any) => page.id);
-
       const finalizeUrl = `${outstandBaseUrl}/social-accounts/pending/${body.sessionToken}/finalize`;
       const finalizeResponse = await fetch(finalizeUrl, {
         method: 'POST',
@@ -263,6 +261,7 @@ export class AutopostController {
     @Body()
     body: {
       sessionToken?: string;
+      selectedPageIds?: string[];
       account_id?: string;
       network_unique_id?: string;
       username?: string;
@@ -271,11 +270,14 @@ export class AutopostController {
   ) {
     const userId = req.user.id;
 
-    // 🅰️ FLOW A: TWO-STEP HANDSHAKE (Facebook)
+    // 🅰️ FLOW A: TWO-STEP HANDSHAKE (Facebook). selectedPageIds must come
+    // from the user's actual choice — call GET pending/:sessionToken first
+    // to list the options, then send back only what they picked.
     if (body.sessionToken) {
       return this.autopostService.finalizeTwoStepConnection(
         userId,
         body.sessionToken,
+        body.selectedPageIds ?? [],
       );
     }
 
