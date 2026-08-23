@@ -1,12 +1,17 @@
-import { Injectable, InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
+import { ForbiddenException, Injectable, InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
 import sharp from 'sharp';
 import fetch from 'node-fetch';
 import { randomUUID } from 'crypto';
+import type { Response } from 'express';
 import { ApplyLogoDto } from './dto/apply-logo.dto';
 import { ImgbbService } from '../lib/imgbb/imgbb.service';
+import { JwtLibService } from '../lib/jwt/jwt.service';
+import { RedisService } from '../common/redis/redis.service';
 
 const CANVAS = 500;
 const MARGIN = 16;
+const DOWNLOAD_TOKEN_TTL_SECONDS = 30 * 60;
+const DOWNLOAD_TOKEN_PURPOSE = 'render-download';
 
 type Position = 'tl' | 'tr' | 'bl' | 'br';
 
@@ -19,9 +24,22 @@ const BADGE_STYLE_FILL: Record<string, { fill: string; border?: { color: string;
 
 @Injectable()
 export class ApplyLogoService {
-  constructor(private readonly imgbbService: ImgbbService) {}
+  constructor(
+    private readonly imgbbService: ImgbbService,
+    private readonly jwtLibService: JwtLibService,
+    private readonly redisService: RedisService
+  ) {}
 
-  async apply(dto: ApplyLogoDto): Promise<{ renderId: string; imageUrl: string; width: number; height: number; createdAt: string }> {
+  async apply(dto: ApplyLogoDto): Promise<{
+    renderId: string;
+    downloadToken: string;
+    expiresIn: number;
+    previewUrl: string;
+    downloadUrl: string;
+    width: number;
+    height: number;
+    createdAt: string;
+  }> {
     const templateBuf = await this.fetchAsBuffer(dto.templateImageUrl);
 
     const wantsLogo = dto.showLogo && !!dto.logoUrl;
@@ -62,9 +80,22 @@ export class ApplyLogoService {
 
       const { imageUrl } = await this.imgbbService.uploadBuffer(outputBuffer);
 
+      const renderId = randomUUID();
+      await this.redisService
+        .getClient()
+        .set(this.renderKey(renderId), imageUrl, { EX: DOWNLOAD_TOKEN_TTL_SECONDS });
+
+      const downloadToken = this.jwtLibService.sign(
+        { purpose: DOWNLOAD_TOKEN_PURPOSE, renderId },
+        { expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS }
+      );
+
       return {
-        renderId: randomUUID(),
-        imageUrl,
+        renderId,
+        downloadToken,
+        expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS,
+        previewUrl: `/api/templates/render/${renderId}?token=${downloadToken}`,
+        downloadUrl: `/api/templates/render/${renderId}/download?token=${downloadToken}`,
         width: CANVAS,
         height: CANVAS,
         createdAt: new Date().toISOString(),
@@ -73,6 +104,36 @@ export class ApplyLogoService {
       console.error('apply-logo render error:', error);
       throw new InternalServerErrorException('Render failed');
     }
+  }
+
+  async streamRender(renderId: string, token: string, asAttachment: boolean, res: Response): Promise<void> {
+    if (!token) throw new ForbiddenException('Missing token');
+
+    let payload: { purpose?: string; renderId?: string };
+    try {
+      payload = this.jwtLibService.verify(token);
+    } catch {
+      throw new ForbiddenException('Invalid or expired token');
+    }
+
+    if (payload.purpose !== DOWNLOAD_TOKEN_PURPOSE || payload.renderId !== renderId) {
+      throw new ForbiddenException('Token does not match this render');
+    }
+
+    const imageUrl = await this.redisService.getClient().get(this.renderKey(renderId));
+    if (!imageUrl) throw new ForbiddenException('Render expired or not found');
+
+    const buffer = await this.fetchAsBuffer(imageUrl);
+
+    res.setHeader('Content-Type', 'image/png');
+    if (asAttachment) {
+      res.setHeader('Content-Disposition', `attachment; filename="${renderId}.png"`);
+    }
+    res.send(buffer);
+  }
+
+  private renderKey(renderId: string): string {
+    return `render:download:${renderId}`;
   }
 
   private async fetchAsBuffer(url: string): Promise<Buffer> {
