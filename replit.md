@@ -17,8 +17,7 @@ Required env vars:
 - `GOOGLE_API_KEY` — Gemini AI text/image generation
 - `GOOGLE_CLIENT_ID` — Google OAuth login
 - `FB_APP_ID`, `FB_APP_SECRET`, `FB_REDIRECT_URI` — Facebook OAuth
-- `IMAGEKIT_PUBLIC_KEY`, `IMAGEKIT_PRIVATE_KEY`, `IMAGEKIT_URL_ENDPOINT` — Image hosting
-- `IMGBB_KEY` — Alternative image upload
+- `IMGBB_KEY` — Image hosting
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_BUCKET_NAME`, `AWS_REGION` — S3 for reels
 
 ## Stack
@@ -29,7 +28,7 @@ Required env vars:
 - **Queue**: BullMQ + IORedis (local Redis)
 - **Email**: Brevo (Sendinblue)
 - **AI**: Google Gemini via `@google/genai`
-- **Storage**: ImageKit + AWS S3
+- **Storage**: ImgBB + AWS S3
 
 ## Where things live
 
@@ -42,14 +41,14 @@ Required env vars:
 - `src/industries/` — industry/sub-industry content management
 - `src/calendar/` — content calendar planning
 - `src/geminiimage/` — AI post generation
-- `src/imagelayout/` — image compositing with ImageKit
+- `src/logo-overlay/` — logo upload + template logo-overlay rendering via ImgBB
 - `prisma/schema.prisma` — DB schema source of truth
 - `start.sh` — startup script (daemonizes Redis, runs Node)
 
 ## Architecture decisions
 
 - Redis runs locally (daemonized) to power BullMQ job queues for social media post scheduling
-- Services with missing API keys (Brevo, ImageKit, AWS S3) are initialized lazily/conditionally to avoid crash on startup
+- Services with missing API keys (Brevo, ImgBB, AWS S3) are initialized lazily/conditionally to avoid crash on startup
 - `DIRECT_URL` removed from Prisma schema — Replit DB only needs `DATABASE_URL`
 - App listens on `0.0.0.0` (not `localhost`) for Replit proxy compatibility
 - VM deployment target used (not autoscale) because Redis state and BullMQ workers must persist across requests
@@ -61,12 +60,12 @@ Required env vars:
 - AI-powered social media post generation via Google Gemini
 - Content calendar: schedule and plan posts across social platforms
 - Facebook integration: OAuth connect, page management, scheduled posting via BullMQ
-- Image layout composer: overlay logos and text on images via ImageKit
+- Logo overlay: upload a logo and render it onto a template image with badge/branding controls
 - Subscription management (Starter/Growth plans, monthly/yearly billing)
 
 ## Gotchas
 
 - Redis must be running before the NestJS server starts (`start.sh` handles this)
 - Without `BREVO_API_KEY`, email features (OTP, notifications) are disabled at runtime
-- Without ImageKit keys, `imagelayout` endpoints will fail at request time (not startup)
+- Without `IMGBB_KEY`, `logo-overlay` and `logo` endpoints will fail at request time (not startup)
 - AWS keys required only for reel uploads; missing keys don't crash startup
