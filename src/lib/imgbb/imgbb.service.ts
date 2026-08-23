@@ -7,12 +7,14 @@ export class ImgbbService {
   private readonly imgbbKey = process.env.IMGBB_KEY
 
   async uploadFile(file: Express.Multer.File): Promise<{ imageUrl: string; deleteUrl: string }> {
+    return this.uploadBuffer(file.buffer)
+  }
+
+  async uploadBuffer(buffer: Buffer): Promise<{ imageUrl: string; deleteUrl: string }> {
     if (!this.imgbbKey) throw new InternalServerErrorException('ImgBB API key not set')
 
-    const base64 = file.buffer.toString('base64')
-
     const form = new FormData()
-    form.append('image', base64)
+    form.append('image', buffer.toString('base64'))
 
     try {
       const res = await axios.post(`https://api.imgbb.com/1/upload?key=${this.imgbbKey}`, form, {
