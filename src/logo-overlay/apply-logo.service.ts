@@ -42,7 +42,7 @@ export class ApplyLogoService {
   }> {
     const templateBuf = await this.fetchAsBuffer(dto.templateImageUrl);
 
-    const wantsLogo = dto.showLogo && !!dto.logoUrl;
+    const wantsLogo = dto.showBadge && dto.showLogo && !!dto.logoUrl;
     const logoBuf = wantsLogo ? await this.fetchAsBuffer(dto.logoUrl as string) : null;
 
     let background: Buffer;
@@ -161,7 +161,7 @@ export class ApplyLogoService {
     if (dto.showContact && dto.phone) lines.push({ text: dto.phone, fontSize: 12, fontWeight: 600 });
     if (dto.showOvtext && dto.overlayText) lines.push({ text: dto.overlayText, fontSize: 12, fontWeight: 500 });
 
-    if (!showLogoBox && lines.length === 0) return null;
+    if (!dto.showBadge || (!showLogoBox && lines.length === 0)) return null;
 
     const paddingX = 14;
     const paddingY = 10;

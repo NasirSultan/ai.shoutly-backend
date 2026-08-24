@@ -53,6 +53,9 @@ export class ApplyLogoDto {
   overlayText?: string;
 
   @IsBoolean()
+  showBadge: boolean;
+
+  @IsBoolean()
   showLogo: boolean;
 
   @IsBoolean()
