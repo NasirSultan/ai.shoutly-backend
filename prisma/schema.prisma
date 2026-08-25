@@ -25,6 +25,13 @@ model User {
   brandName        String?
   brandLogo        String?
   website          String?
+  primaryColor     String?
+  badgeStyle       String?
+  textColor        String?
+  opacity          Int?
+  blur             Int?
+  radius           Int?
+  applyPlatforms   SocialPlatform[] @default([])
   socialAccounts   SocialAccount[]
   posts            Post[]
   facebookAccount  FacebookAccount?
@@ -181,6 +188,7 @@ model Image {
   id            String      @id @default(uuid())
   file          String
   text          Boolean     @default(false)
+  type          ImageType   @default(IMAGE)
   deleteUrl     String      @default("")
   subIndustry   SubIndustry @relation(fields: [subIndustryId], references: [id], onDelete: Cascade)
   subIndustryId String
@@ -190,6 +198,12 @@ model Image {
   driveUrl      String?
 
   @@index([subIndustryId])
+}
+
+enum ImageType {
+  IMAGE
+  REEL
+  CAROUSEL
 }
 
 model Logo {

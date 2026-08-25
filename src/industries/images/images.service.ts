@@ -234,7 +234,7 @@ async getImagesBySubIndustry(subIndustryId?: string) {
       if (!validSubIndustry) throw new BadRequestException('Invalid subIndustryId')
 
       return prisma.$queryRaw`
-        SELECT id, file, "subIndustryId"
+        SELECT id, file, "subIndustryId", type
         FROM "Image"
         WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
         ORDER BY RANDOM()
@@ -243,7 +243,7 @@ async getImagesBySubIndustry(subIndustryId?: string) {
     }
 
     return prisma.$queryRaw`
-      SELECT id, file, "subIndustryId"
+      SELECT id, file, "subIndustryId", type
       FROM "Image"
       WHERE "deletedAt" IS NULL
       ORDER BY RANDOM()
