@@ -11,6 +11,7 @@ interface PostRow {
   contentId: string
   text: string
   hashtags: string
+  type: string
 }
 
 const LATERAL_SELECT = `
@@ -18,6 +19,7 @@ const LATERAL_SELECT = `
     i.id::text          AS "imageId",
     i.file              AS "imageUrl",
     i."subIndustryId"   AS "subIndustryId",
+    i.type              AS "type",
     c.id::text          AS "contentId",
     c.ctxt              AS "text",
     c.hashtags          AS "hashtags"

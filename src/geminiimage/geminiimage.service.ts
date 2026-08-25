@@ -310,6 +310,7 @@ export interface GeneratedPost {
   hashtags: string[]
   source: 'LLM' | 'DB'
   index: number
+  type?: 'IMAGE' | 'REEL' | 'CAROUSEL'
 }
 
 export interface StreamEvent {
@@ -371,8 +372,8 @@ export class PostGeneratorService {
     const subIndustryName = subIndustryRecord?.name ?? ''
 
     const dbImages = subIndustryId
-      ? await prisma.$queryRaw<{ id: string; file: string }[]>`
-          SELECT id, file FROM "Image"
+      ? await prisma.$queryRaw<{ id: string; file: string; type: 'IMAGE' | 'REEL' | 'CAROUSEL' }[]>`
+          SELECT id, file, type FROM "Image"
           WHERE "subIndustryId" = ${subIndustryId} AND "deletedAt" IS NULL
           ORDER BY RANDOM()
           LIMIT 7
@@ -423,6 +424,7 @@ export class PostGeneratorService {
           text,
           hashtags,
           source: 'DB',
+          type: batch[j].type,
         })
       })
 
