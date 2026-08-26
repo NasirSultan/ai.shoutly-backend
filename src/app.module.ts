@@ -16,6 +16,7 @@ import { JobsModule } from './jobs/jobs.module'
 import {AutopostModule} from './outstand/autopost.module'
 import { RagModule } from './rag/rag.module'
 import { ContactModule } from './contact/contact.module'
+import { LeadModule } from './lead/lead.module'
 import { PostsModule } from './posts/posts.module'
 import { FestivalsModule } from './festivals/festivals.module'
 import { NotesModule } from './notes/notes.module'
@@ -43,6 +44,7 @@ import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
   AutopostModule,
   RagModule,
   ContactModule,
+  LeadModule,
   PostsModule,
   FestivalsModule,
   NotesModule,

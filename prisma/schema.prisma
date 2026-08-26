@@ -549,6 +549,34 @@ model WebsiteSnapshot {
   updatedAt DateTime @updatedAt
 }
 
+enum LeadStatus {
+  PENDING
+  DONE
+}
+
+model Lead {
+  id              String     @id @default(uuid())
+  name            String
+  email           String?
+  phone           String?
+  businessName    String?
+  city            String?
+  service         String?
+  message         String?
+  businessSize    String?
+  promotion       String?
+  servicePage     String?
+  serviceCategory String?
+  pageUrl         String?
+  status          LeadStatus @default(PENDING)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+}
+
 model DemoBooking {
   id           String            @id @default(uuid())
   fullName     String
