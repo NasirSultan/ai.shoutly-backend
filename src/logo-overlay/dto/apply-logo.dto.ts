@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUrl, Matches, Max, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUrl, Matches, Max, Min } from 'class-validator';
 
 export class ApplyLogoDto {
   @IsUrl({ require_tld: false })
@@ -15,6 +15,16 @@ export class ApplyLogoDto {
   @Min(24)
   @Max(80)
   logoSize: number;
+
+  // Scales the whole badge card (padding, font sizes, logo, line height)
+  // uniformly — separate from logoSize, which only resizes the logo icon
+  // within whatever card size this produces. Optional so existing callers
+  // that don't send it keep getting today's size (scale 1).
+  @IsOptional()
+  @IsNumber()
+  @Min(0.75)
+  @Max(1.5)
+  cardScale?: number;
 
   @IsIn(['glass', 'solid', 'outline', 'minimal'])
   badgeStyle: 'glass' | 'solid' | 'outline' | 'minimal';

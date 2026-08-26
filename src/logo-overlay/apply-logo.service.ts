@@ -69,7 +69,9 @@ export class ApplyLogoService {
 
       let logoDataUri: string | null = null;
       if (logoBuf && badge) {
-        const rounded = await this.roundedSquareLogo(logoBuf, dto.logoSize);
+        // badge.logoBoxSize (not dto.logoSize) — it's already cardScale-adjusted,
+        // so the raster is rendered crisp at its actual on-canvas display size.
+        const rounded = await this.roundedSquareLogo(logoBuf, Math.round(badge.logoBoxSize));
         logoDataUri = `data:image/png;base64,${rounded.toString('base64')}`;
       }
 
@@ -154,19 +156,26 @@ export class ApplyLogoService {
     return sharp(resized).composite([{ input: mask, blend: 'dest-in' }]).png().toBuffer();
   }
 
-  private computeBadge(dto: ApplyLogoDto): { x: number; y: number; width: number; height: number; textStartX: number; textTopY: number; lines: { text: string; fontSize: number; fontWeight: number }[]; logoBoxSize: number } | null {
+  private computeBadge(dto: ApplyLogoDto): { x: number; y: number; width: number; height: number; textStartX: number; textTopY: number; lines: { text: string; fontSize: number; fontWeight: number }[]; logoBoxSize: number; paddingX: number; lineHeight: number } | null {
     const showLogoBox = dto.showLogo && !!dto.logoUrl;
+
+    // Scales the whole card uniformly — padding, font sizes, logo, line
+    // height — as one "bigger/smaller card" knob, distinct from logoSize
+    // which only resizes the icon within whatever card size this produces.
+    const scale = dto.cardScale ?? 1;
+    const logoSize = dto.logoSize * scale;
+
     const lines: { text: string; fontSize: number; fontWeight: number }[] = [];
-    if (dto.showName && dto.brandName) lines.push({ text: dto.brandName, fontSize: 15, fontWeight: 800 });
-    if (dto.showContact && dto.phone) lines.push({ text: dto.phone, fontSize: 12, fontWeight: 600 });
-    if (dto.showOvtext && dto.overlayText) lines.push({ text: dto.overlayText, fontSize: 12, fontWeight: 500 });
+    if (dto.showName && dto.brandName) lines.push({ text: dto.brandName, fontSize: 15 * scale, fontWeight: 800 });
+    if (dto.showContact && dto.phone) lines.push({ text: dto.phone, fontSize: 12 * scale, fontWeight: 600 });
+    if (dto.showOvtext && dto.overlayText) lines.push({ text: dto.overlayText, fontSize: 12 * scale, fontWeight: 500 });
 
     if (!dto.showBadge || (!showLogoBox && lines.length === 0)) return null;
 
-    const paddingX = 14;
-    const paddingY = 10;
-    const gap = 10;
-    const lineHeight = 17;
+    const paddingX = 14 * scale;
+    const paddingY = 10 * scale;
+    const gap = 10 * scale;
+    const lineHeight = 15 * scale;
 
     // Safety margin on top of the estimate: the "Inter" font family requested
     // in the SVG isn't guaranteed to be installed wherever this renders, and
@@ -183,10 +192,10 @@ export class ApplyLogoService {
     // logo-only badges were getting an unwanted extra 10px of right-side
     // padding from a gap with nothing on the other side of it.
     const logoToTextGap = showLogoBox && lines.length > 0 ? gap : 0;
-    const contentWidth = (showLogoBox ? dto.logoSize + logoToTextGap : 0) + textBlockWidth;
-    const contentHeight = Math.max(showLogoBox ? dto.logoSize : 0, textBlockHeight);
+    const contentWidth = (showLogoBox ? logoSize + logoToTextGap : 0) + textBlockWidth;
+    const contentHeight = Math.max(showLogoBox ? logoSize : 0, textBlockHeight);
 
-    const width = Math.round(Math.min(260, contentWidth + paddingX * 2));
+    const width = Math.round(Math.min(260 * scale, contentWidth + paddingX * 2));
     const height = Math.round(contentHeight + paddingY * 2);
 
     let x: number;
@@ -216,10 +225,10 @@ export class ApplyLogoService {
     // Equal left/right padding depends entirely on estimateTextWidth() being
     // close to the real rendered width, since the box is sized from it —
     // see estimateTextWidth's per-character table for how that's kept tight.
-    const textStartX = x + paddingX + (showLogoBox ? dto.logoSize + logoToTextGap : 0);
+    const textStartX = x + paddingX + (showLogoBox ? logoSize + logoToTextGap : 0);
     const textTopY = y + (height - textBlockHeight) / 2;
 
-    return { x, y, width, height, textStartX, textTopY, lines, logoBoxSize: showLogoBox ? dto.logoSize : 0 };
+    return { x, y, width, height, textStartX, textTopY, lines, logoBoxSize: showLogoBox ? logoSize : 0, paddingX, lineHeight };
   }
 
   private buildOverlaySvg(
@@ -246,32 +255,35 @@ export class ApplyLogoService {
   }
 
   private buildBottomBar(dto: ApplyLogoDto): string {
-    const barHeight = 50;
+    // Black-to-primaryColor is a genuine opaque color blend (not an alpha
+    // fade), so it stays visually smooth at any height — shrinking this is
+    // safe now in a way the old opacity-based version wasn't.
+    const barHeight = Math.round(CANVAS * 0.18);
     const barTop = CANVAS - barHeight;
     const text = [dto.showName ? dto.brandName : '', dto.showContact ? dto.phone : '', dto.showOvtext ? dto.overlayText : '']
       .filter((t) => !!t && t.trim().length > 0)
       .join('  ·  ');
 
-    if (!text) {
-      return `
+    const gradientDefs = `
         <defs>
           <linearGradient id="bottomBarGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="${dto.primaryColor}" stop-opacity="0"/>
-            <stop offset="100%" stop-color="${dto.primaryColor}" stop-opacity="0.7"/>
+            <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+            <stop offset="100%" stop-color="${dto.primaryColor}" stop-opacity="1"/>
           </linearGradient>
-        </defs>
+        </defs>`;
+
+    if (!text) {
+      return `${gradientDefs}
         <rect x="0" y="${barTop}" width="${CANVAS}" height="${barHeight}" fill="url(#bottomBarGrad)"/>`;
     }
 
-    return `
-      <defs>
-        <linearGradient id="bottomBarGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="${dto.primaryColor}" stop-opacity="0"/>
-          <stop offset="100%" stop-color="${dto.primaryColor}" stop-opacity="0.7"/>
-        </linearGradient>
-      </defs>
+    // Anchored near the bottom edge (not centered in the tall gradient band)
+    // — that's where the fill is solid/opaque enough for white text to read.
+    const textY = CANVAS - 18;
+
+    return `${gradientDefs}
       <rect x="0" y="${barTop}" width="${CANVAS}" height="${barHeight}" fill="url(#bottomBarGrad)"/>
-      <text x="${CANVAS / 2}" y="${CANVAS - 18}" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">${this.escapeXml(text)}</text>`;
+      <text x="${CANVAS / 2}" y="${textY}" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">${this.escapeXml(text)}</text>`;
   }
 
   private buildCornerAccent(dto: ApplyLogoDto): string {
@@ -311,14 +323,17 @@ export class ApplyLogoService {
     let logoImage = '';
     if (logoDataUri && badge.logoBoxSize > 0) {
       const logoY = badge.y + (badge.height - badge.logoBoxSize) / 2;
-      const logoX = badge.x + 14;
+      const logoX = badge.x + badge.paddingX;
       logoImage = `<image x="${logoX}" y="${logoY}" width="${badge.logoBoxSize}" height="${badge.logoBoxSize}" href="${logoDataUri}"/>`;
     }
 
-    const lineHeight = 17;
+    // 0.76 is lineHeight's fixed ratio to the original 17px baseline offset
+    // (13/17) — kept proportional so cardScale doesn't throw off vertical
+    // spacing between stacked lines.
+    const baselineOffset = badge.lineHeight * 0.76;
     const textLines = badge.lines
       .map((line, i) => {
-        const y = badge.textTopY + i * lineHeight + 13;
+        const y = badge.textTopY + i * badge.lineHeight + baselineOffset;
         return `<text x="${badge.textStartX}" y="${y}" font-family="Inter, system-ui, sans-serif" font-size="${line.fontSize}" font-weight="${line.fontWeight}" fill="${textColor}">${this.escapeXml(line.text)}</text>`;
       })
       .join('');
