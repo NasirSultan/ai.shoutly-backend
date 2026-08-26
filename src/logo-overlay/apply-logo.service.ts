@@ -287,8 +287,11 @@ export class ApplyLogoService {
   }
 
   private buildCornerAccent(dto: ApplyLogoDto): string {
-    const size = 44;
-    const strokeWidth = 4;
+    // Scales with cardScale like every other badge measurement — a fixed
+    // 44px bracket looked oversized next to a small (low-cardScale) badge.
+    const scale = dto.cardScale ?? 1;
+    const size = 44 * scale * 0.5;
+    const strokeWidth = 4 * scale;
     let path: string;
     switch (dto.position as Position) {
       case 'tr':
