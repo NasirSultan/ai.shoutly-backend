@@ -168,10 +168,22 @@ export class ApplyLogoService {
     const gap = 10;
     const lineHeight = 17;
 
-    const textBlockWidth = lines.reduce((max, l) => Math.max(max, this.estimateTextWidth(l.text, l.fontSize, l.fontWeight)), 0);
+    // Safety margin on top of the estimate: the "Inter" font family requested
+    // in the SVG isn't guaranteed to be installed wherever this renders, and
+    // librsvg silently substitutes a fallback with different (usually wider)
+    // metrics when it isn't. Erring toward a bit of extra right-padding is a
+    // far smaller problem than text clipping past the box edge.
+    const WIDTH_SAFETY_MARGIN = 1.15;
+    const textBlockWidth =
+      lines.reduce((max, l) => Math.max(max, this.estimateTextWidth(l.text, l.fontSize, l.fontWeight)), 0) *
+      WIDTH_SAFETY_MARGIN;
     const textBlockHeight = lines.length * lineHeight;
 
-    const contentWidth = (showLogoBox ? dto.logoSize + gap : 0) + textBlockWidth;
+    // No gap reserved when there's no text to separate the logo from —
+    // logo-only badges were getting an unwanted extra 10px of right-side
+    // padding from a gap with nothing on the other side of it.
+    const logoToTextGap = showLogoBox && lines.length > 0 ? gap : 0;
+    const contentWidth = (showLogoBox ? dto.logoSize + logoToTextGap : 0) + textBlockWidth;
     const contentHeight = Math.max(showLogoBox ? dto.logoSize : 0, textBlockHeight);
 
     const width = Math.round(Math.min(260, contentWidth + paddingX * 2));
@@ -199,7 +211,12 @@ export class ApplyLogoService {
         break;
     }
 
-    const textStartX = x + paddingX + (showLogoBox ? dto.logoSize + gap : 0);
+    // Left-aligned (a stacked name/phone/website block reads naturally
+    // flush-left next to the logo, not each line individually centered).
+    // Equal left/right padding depends entirely on estimateTextWidth() being
+    // close to the real rendered width, since the box is sized from it —
+    // see estimateTextWidth's per-character table for how that's kept tight.
+    const textStartX = x + paddingX + (showLogoBox ? dto.logoSize + logoToTextGap : 0);
     const textTopY = y + (height - textBlockHeight) / 2;
 
     return { x, y, width, height, textStartX, textTopY, lines, logoBoxSize: showLogoBox ? dto.logoSize : 0 };
@@ -229,8 +246,8 @@ export class ApplyLogoService {
   }
 
   private buildBottomBar(dto: ApplyLogoDto): string {
-    const barTop = CANVAS * 0.78;
-    const barHeight = CANVAS * 0.22;
+    const barHeight = 50;
+    const barTop = CANVAS - barHeight;
     const text = [dto.showName ? dto.brandName : '', dto.showContact ? dto.phone : '', dto.showOvtext ? dto.overlayText : '']
       .filter((t) => !!t && t.trim().length > 0)
       .join('  ·  ');
@@ -339,9 +356,30 @@ export class ApplyLogoService {
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
+  // Per-character-class widths (as a fraction of font size) approximating a
+  // typical humanist sans-serif (Inter). Flat length*fontSize*factor was the
+  // original approach here, but it treats "iiiii" the same as "wwwww",
+  // which is exactly what caused the badge box to under/over-estimate real
+  // text width and made left/right padding look unequal — this is close
+  // enough to keep the box hugging the text tightly in both directions.
   private estimateTextWidth(text: string, fontSize: number, fontWeight = 500): number {
-    const weightFactor = fontWeight >= 700 ? 0.66 : fontWeight >= 600 ? 0.6 : 0.55;
-    return text.length * fontSize * weightFactor;
+    const weightFactor = fontWeight >= 700 ? 1.08 : fontWeight >= 600 ? 1.04 : 1.0;
+    const NARROW = /[iIl.,:;'!|jft ]/;
+    const WIDE = /[mMWw@%]/;
+    const UPPER = /[A-Z]/;
+    const DIGIT = /[0-9]/;
+
+    let total = 0;
+    for (const ch of text) {
+      let charWidth: number;
+      if (NARROW.test(ch)) charWidth = 0.3;
+      else if (WIDE.test(ch)) charWidth = 0.85;
+      else if (DIGIT.test(ch)) charWidth = 0.56;
+      else if (UPPER.test(ch)) charWidth = 0.68;
+      else charWidth = 0.52;
+      total += charWidth * fontSize;
+    }
+    return total * weightFactor;
   }
 
   private escapeXml(text: string): string {
