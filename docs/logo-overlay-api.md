@@ -1,6 +1,6 @@
 # Logo Overlay API
 
-Backend implementation for the Templates page "apply your logo" feature. Two endpoints, no authentication required on either. Source: `src/logo-overlay/`.
+Backend implementation for the Templates page "apply your logo" feature. Three endpoints, no authentication required on any of them. Source: `src/logo-overlay/`.
 
 All routes are under the app's global prefix: `/api`.
 
@@ -56,7 +56,50 @@ curl -X POST http://localhost:3000/api/logo/upload \
 
 ---
 
-## 2. Apply Logo Overlay (render)
+## 2. Upload Template
+
+Uploads a background/template image and returns a hosted URL that `POST /api/templates/apply-logo` can use as `templateImageUrl`. Lets a user bring their own background instead of only picking from the built-in template library.
+
+```
+POST /api/templates/upload
+Content-Type: multipart/form-data
+Authorization: none
+```
+
+### Request fields
+
+| Field | Type | Required? | Notes |
+|---|---|---|---|
+| `file` | file | **Required** | PNG, JPG, SVG, or WEBP. Max 5MB. |
+
+Same validation and error responses as `POST /api/logo/upload` above (`400` no file / unsupported type, `413` too large) — it's the identical upload pipeline (`ImgbbService`), just labeled for templates instead of logos.
+
+### Response — `200 OK`
+
+```json
+{
+  "templateId": "ea9202f8-ec4d-407c-8c1b-f793dda2370a",
+  "templateUrl": "https://i.ibb.co/xxxxxxx/xxxx.jpg",
+  "width": 800,
+  "height": 930
+}
+```
+
+- `templateId` — a random token for the frontend to key off of, same as `logoId` on the upload-logo endpoint. Not looked up server-side anywhere.
+- `templateUrl` — pass this straight into `apply-logo`'s `templateImageUrl` field.
+
+### Example
+
+```bash
+curl -X POST http://localhost:3000/api/templates/upload \
+  -F "file=@/path/to/background.jpg"
+```
+
+Verified end-to-end: uploaded a real JPG, got back a `templateUrl`, fed it into `apply-logo` as `templateImageUrl`, and the resulting render correctly used the uploaded image as its background.
+
+---
+
+## 3. Apply Logo Overlay (render)
 
 Composites a template background image with an optional logo + branding badge and/or bottom bar, per the style controls below, and returns short-lived access to the result — **not** a permanent public URL (see [Access model](#access-model) below).
 
@@ -102,7 +145,7 @@ Every field below must be present **except** the three marked optional. There ar
 
 | Field | Type | Required? | Values / range | Effect if omitted (only applies to the 3 optional fields) |
 |---|---|---|---|---|
-| `templateImageUrl` | string (URL) | **Required** | any fetchable image URL | — |
+| `templateImageUrl` | string (URL) | **Required** | any fetchable image URL — from the built-in template library, or the `templateUrl` returned by `POST /api/templates/upload` above | — |
 | `logoUrl` | string (URL) | Optional | any fetchable image URL | No logo in the badge — text-only badge (or no badge at all if no text is shown either) |
 | `position` | string | **Required** | `"tl"` \| `"tr"` \| `"bl"` \| `"br"` | — |
 | `logoSize` | number | **Required** | `24`–`80` | — |
