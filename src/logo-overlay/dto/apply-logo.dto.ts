@@ -47,8 +47,11 @@ export class ApplyLogoDto {
   @Matches(/^#[0-9A-Fa-f]{6}$/)
   primaryColor: string;
 
-  @IsIn(['white', 'dark'])
-  textColor: 'white' | 'dark';
+  // "white"/"dark" stay as convenience shortcuts for the two most common
+  // choices, but any full hex color is accepted too — not locked to a binary
+  // choice.
+  @Matches(/^(white|dark|#[0-9A-Fa-f]{6})$/)
+  textColor: string;
 
   @IsOptional()
   @IsString()

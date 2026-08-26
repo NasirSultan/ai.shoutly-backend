@@ -315,7 +315,7 @@ export class ApplyLogoService {
       ? `stroke="${this.resolveBadgeColor(style.border.color, dto.primaryColor)}" stroke-width="${style.border.width}"`
       : '';
 
-    const textColor = dto.textColor === 'white' ? '#ffffff' : '#0D0E1A';
+    const textColor = dto.textColor === 'white' ? '#ffffff' : dto.textColor === 'dark' ? '#0D0E1A' : dto.textColor;
     const opacity = dto.opacity / 100;
 
     const rectFill = fill === 'none' ? 'fill="none"' : `fill="${fill}"`;
