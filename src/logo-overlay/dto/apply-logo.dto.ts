@@ -22,7 +22,7 @@ export class ApplyLogoDto {
   // that don't send it keep getting today's size (scale 1).
   @IsOptional()
   @IsNumber()
-  @Min(0.75)
+  @Min(0.5)
   @Max(1.5)
   cardScale?: number;
 
