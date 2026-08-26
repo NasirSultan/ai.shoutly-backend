@@ -12,6 +12,11 @@ const CANVAS = 500;
 const MARGIN = 16;
 const DOWNLOAD_TOKEN_TTL_SECONDS = 30 * 60;
 const DOWNLOAD_TOKEN_PURPOSE = 'render-download';
+// Rendered outputs are disposable — ImgBB deletes the file itself after this
+// window (see ImgbbService.uploadBuffer's expirationSeconds), independent of
+// the much shorter DOWNLOAD_TOKEN_TTL_SECONDS above (which only gates API
+// access, not the underlying file's lifetime).
+const IMAGE_EXPIRATION_SECONDS = 24 * 60 * 60;
 
 type Position = 'tl' | 'tr' | 'bl' | 'br';
 
@@ -80,7 +85,7 @@ export class ApplyLogoService {
 
       const outputBuffer = await sharp(background).composite(layers).png().toBuffer();
 
-      const { imageUrl } = await this.imgbbService.uploadBuffer(outputBuffer);
+      const { imageUrl } = await this.imgbbService.uploadBuffer(outputBuffer, IMAGE_EXPIRATION_SECONDS);
 
       const renderId = randomUUID();
       await this.redisService
@@ -260,7 +265,11 @@ export class ApplyLogoService {
     // safe now in a way the old opacity-based version wasn't.
     const barHeight = Math.round(CANVAS * 0.18);
     const barTop = CANVAS - barHeight;
-    const text = [dto.showName ? dto.brandName : '', dto.showContact ? dto.phone : '', dto.showOvtext ? dto.overlayText : '']
+    // showName/showContact/showOvtext control badge content only — the
+    // frontend's own toggle labels say "on badge" ("Display name text on
+    // badge", etc.). The bottom bar shows whatever text fields are
+    // non-empty whenever showTextbar is on, regardless of those flags.
+    const text = [dto.brandName, dto.phone, dto.overlayText]
       .filter((t) => !!t && t.trim().length > 0)
       .join('  ·  ');
 

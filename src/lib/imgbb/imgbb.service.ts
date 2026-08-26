@@ -10,11 +10,17 @@ export class ImgbbService {
     return this.uploadBuffer(file.buffer)
   }
 
-  async uploadBuffer(buffer: Buffer): Promise<{ imageUrl: string; deleteUrl: string }> {
+  // expirationSeconds (ImgBB's own auto-delete window, 60–15552000) is
+  // optional — omit it for source assets someone may reuse later (logos,
+  // templates); pass it for disposable outputs (rendered layouts) that
+  // shouldn't accumulate on ImgBB forever. ImgBB deletes the file itself
+  // once it expires, no cleanup job needed on our side.
+  async uploadBuffer(buffer: Buffer, expirationSeconds?: number): Promise<{ imageUrl: string; deleteUrl: string }> {
     if (!this.imgbbKey) throw new InternalServerErrorException('ImgBB API key not set')
 
     const form = new FormData()
     form.append('image', buffer.toString('base64'))
+    if (expirationSeconds) form.append('expiration', String(expirationSeconds))
 
     try {
       const res = await axios.post(`https://api.imgbb.com/1/upload?key=${this.imgbbKey}`, form, {
