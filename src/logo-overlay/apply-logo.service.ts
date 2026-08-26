@@ -287,12 +287,13 @@ export class ApplyLogoService {
     }
 
     // Anchored near the bottom edge (not centered in the tall gradient band)
-    // — that's where the fill is solid/opaque enough for white text to read.
+    // — that's where the fill is solid/opaque enough for text to read.
     const textY = CANVAS - 18;
+    const textColor = this.resolveTextColor(dto.textColor);
 
     return `${gradientDefs}
       <rect x="0" y="${barTop}" width="${CANVAS}" height="${barHeight}" fill="url(#bottomBarGrad)"/>
-      <text x="${CANVAS / 2}" y="${textY}" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">${this.escapeXml(text)}</text>`;
+      <text x="${CANVAS / 2}" y="${textY}" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" fill="${textColor}" text-anchor="middle">${this.escapeXml(text)}</text>`;
   }
 
   private buildCornerAccent(dto: ApplyLogoDto): string {
@@ -327,7 +328,7 @@ export class ApplyLogoService {
       ? `stroke="${this.resolveBadgeColor(style.border.color, dto.primaryColor)}" stroke-width="${style.border.width}"`
       : '';
 
-    const textColor = dto.textColor === 'white' ? '#ffffff' : dto.textColor === 'dark' ? '#0D0E1A' : dto.textColor;
+    const textColor = this.resolveTextColor(dto.textColor);
     const opacity = dto.opacity / 100;
 
     const rectFill = fill === 'none' ? 'fill="none"' : `fill="${fill}"`;
@@ -356,6 +357,14 @@ export class ApplyLogoService {
         ${logoImage}
         ${textLines}
       </g>`;
+  }
+
+  // Shared by both the badge and the bottom bar — "white"/"dark" are
+  // shortcuts, any other value is a literal #RRGGBB hex used as-is.
+  private resolveTextColor(textColor: string): string {
+    if (textColor === 'white') return '#ffffff';
+    if (textColor === 'dark') return '#0D0E1A';
+    return textColor;
   }
 
   private resolveBadgeColor(token: string, primaryColor: string): string {
