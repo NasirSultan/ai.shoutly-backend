@@ -63,4 +63,21 @@ async generateText(
   res.end()
 }
 
+@Post('hashtags')
+async generateHashtags(
+  @Body('caption') caption: string,
+  @Res() res: Response
+) {
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.flushHeaders()
+
+  await this.postGeneratorService.generateHashtagsStreamed(caption, (event) => {
+    res.write(`data: ${JSON.stringify({ hashtags: event.hashtags })}\n\n`)
+  })
+
+  res.end()
+}
+
 }

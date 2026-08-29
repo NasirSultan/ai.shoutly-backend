@@ -293,7 +293,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common'
 import { GeminiService, AiUsageContext } from '../lib/llm/geminillm/gemini.service'
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
-import { buildPostImagePrompt,buildUserTextPrompt, buildPostTextPrompt } from '../lib/prompt/post.prompt'
+import { buildPostImagePrompt,buildUserTextPrompt, buildPostTextPrompt, buildHashtagPrompt } from '../lib/prompt/post.prompt'
 import { Express } from 'express'
 import OpenAI from 'openai'
 import { prisma } from '../lib/prisma'
@@ -810,7 +810,53 @@ async generateTextStreamed(
   onPost({ text })
 }
 
-  
+/** Generates hashtags for an existing caption — a dedicated task, unlike
+ *  generateTextStreamed which is hard-wired to write a caption and explicitly
+ *  forbids hashtags in its prompt. Kept as its own method/prompt rather than
+ *  branching generateTextStreamed so neither task's prompt has to compromise
+ *  for the other. */
+async generateHashtagsStreamed(
+  caption: string,
+  onPost: (event: { hashtags: string[] }) => void
+): Promise<void> {
+  const prompt = buildHashtagPrompt(caption)
+  const completion = await deepseek.chat.completions.create({
+    model: 'deepseek-chat',
+    messages: [{ role: 'user', content: prompt }],
+  })
+
+  this.aiUsageLogService.logText({
+    userId: null,
+    provider: 'DEEPSEEK',
+    model: 'deepseek-chat',
+    operation: 'TEXT_GENERATION',
+    promptTokens: completion.usage?.prompt_tokens ?? 0,
+    completionTokens: completion.usage?.completion_tokens ?? 0,
+  })
+
+  const raw = completion.choices[0]?.message?.content?.trim() ?? ''
+  onPost({ hashtags: this.parseHashtagsResult(raw) })
+}
+
+private parseHashtagsResult(raw: string): string[] {
+  try {
+    const clean = raw.replace(/```json|```/gi, '').trim()
+    const parsed = JSON.parse(clean)
+    if (Array.isArray(parsed.hashtags)) {
+      return parsed.hashtags
+        .map((h: string) => String(h).replace(/^#+/, '').trim())
+        .filter(Boolean)
+    }
+  } catch {
+    // Model didn't return valid JSON — fall back to splitting the raw text
+    // on commas/newlines rather than surfacing nothing.
+  }
+  return raw
+    .split(/[,\n]+/)
+    .map((s) => s.replace(/^#+/, '').trim())
+    .filter(Boolean)
+}
+
 }
 
 

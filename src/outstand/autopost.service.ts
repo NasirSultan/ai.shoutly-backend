@@ -9,6 +9,26 @@ import { Express } from 'express';
 import { createHash } from 'crypto';
 import { RedisService } from '../common/redis/redis.service';
 
+// Generic, publicly-documented social-media-marketing benchmark posting
+// windows per platform — NOT computed from any individual user's own data.
+// There is currently no engagement/performance tracking anywhere in this
+// schema (Post/PostDelivery only store status + timestamps, nothing about
+// likes/reach/impressions), so a genuine per-account "AI confidence score"
+// can't be computed honestly yet. Labeled "BENCHMARK" rather than "AI" for
+// that reason — see getBestTimes() below.
+const PLATFORM_BENCHMARK_TIMES: Record<string, { time: string; note: string }> = {
+  FACEBOOK: { time: '13:00', note: 'Early-to-mid afternoon on weekdays tends to see the most engagement.' },
+  INSTAGRAM: { time: '11:00', note: 'Late morning and early evening are typically strongest.' },
+  LINKEDIN: { time: '09:00', note: 'Weekday mornings, especially Tue-Thu, perform best for B2B content.' },
+  X: { time: '09:00', note: 'Weekday mornings and lunchtime tend to get the most visibility.' },
+  YOUTUBE: { time: '14:00', note: 'Afternoons, before evening viewing hours ramp up, tend to work well.' },
+  TIKTOK: { time: '19:00', note: 'Evenings see the highest activity on this platform.' },
+  PINTEREST: { time: '20:00', note: 'Evenings and weekends tend to drive more saves and clicks.' },
+  THREADS: { time: '13:00', note: 'Midday tends to align with peak scrolling activity.' },
+  BLUESKY: { time: '09:00', note: 'Mornings tend to see strong engagement on this platform.' },
+  GOOGLE_BUSINESS: { time: '11:00', note: 'Late morning aligns with local search activity.' },
+};
+
 @Injectable()
 export class AutopostService {
   private prisma = prisma;
@@ -139,6 +159,28 @@ export class AutopostService {
             defaultBoardName: acc.defaultBoardName,
           },
         ],
+      };
+    });
+
+    return { success: true, platforms };
+  }
+
+  // ── Benchmark posting-time suggestions for the Smart Scheduling page.
+  // Returned per platform the user has connected — see PLATFORM_BENCHMARK_TIMES
+  // above for why this is a static industry benchmark, not a per-account AI
+  // score: there's no engagement/performance data in this schema to compute
+  // one from yet. ──
+  async getBestTimes(userId: string) {
+    const status = await this.getConnectionStatus(userId);
+
+    const platforms = status.platforms.map((p: { platform: string; connected: boolean }) => {
+      const benchmark = PLATFORM_BENCHMARK_TIMES[p.platform];
+      return {
+        platform: p.platform,
+        connected: p.connected,
+        recommendedTime: benchmark?.time ?? null,
+        note: benchmark?.note ?? null,
+        source: 'BENCHMARK' as const,
       };
     });
 

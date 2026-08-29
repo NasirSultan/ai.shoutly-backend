@@ -46,6 +46,21 @@ Output format (STRICT — valid JSON only, no extra text, no markdown):
   "hashtags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
 }`;
 
+export const buildHashtagPrompt = (caption: string): string =>
+  `You are an expert social media strategist. Generate hashtags for the caption below — nothing else.
+
+Caption:
+${caption}
+
+Hashtag rules:
+- 5 to 8 hashtags only.
+- Mix broad category tags with niche/specific tags relevant to the caption's actual content.
+- No spaces, no # symbol in the output, lowercase or camelCase only.
+- Relevant and specific — not generic (#love, #instagood, #follow, #viral are banned).
+
+Output format (STRICT — valid JSON only, no extra text, no markdown, no explanation):
+{ "hashtags": ["tag1", "tag2", "tag3", "tag4", "tag5"] }`;
+
 export const buildUserTextPrompt = (userPrompt: string): string =>
   `You are an expert social media copywriter. Write one short social media post caption based on the user request below.
 

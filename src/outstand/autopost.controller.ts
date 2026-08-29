@@ -106,6 +106,15 @@ export class AutopostController {
     return this.autopostService.getConnectionStatus(req.user.id);
   }
 
+  // Benchmark posting-time suggestions per connected platform for the Smart
+  // Scheduling page — see AutopostService.getBestTimes for why these are
+  // industry-benchmark times rather than a per-account AI confidence score.
+  @Get('best-times')
+  @UseGuards(AuthGuard)
+  getBestTimes(@Req() req) {
+    return this.autopostService.getBestTimes(req.user.id);
+  }
+
   @Delete('accounts/:id')
   @UseGuards(AuthGuard)
   disconnectAccount(@Req() req, @Param('id') id: string) {
