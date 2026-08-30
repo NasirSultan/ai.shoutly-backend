@@ -169,8 +169,8 @@ async login(email: string, password: string) {
   }
 
   const user = await this.prisma.user.findUnique({ where: { email } })
-  if (!user) throw new BadRequestException('User not found')
-  if (!user.password) throw new BadRequestException('Password not set')
+  if (!user) throw new BadRequestException('Invalid email or password')
+  if (!user.password) throw new BadRequestException('Invalid email or password')
 
   const isMatch = await bcrypt.compare(password, user.password)
   if (!isMatch) {
@@ -182,7 +182,7 @@ async login(email: string, password: string) {
       targetType: 'User',
       targetId: user.id,
     })
-    throw new BadRequestException('Invalid credentials')
+    throw new BadRequestException('Invalid email or password')
   }
 
   await client.del(key)
@@ -295,19 +295,19 @@ async sendOtp(email: string) {
   await this.recordRateLimitAttempt(client, key, attempts, 15 * 60 * 1000)
 
   const user = await this.prisma.user.findUnique({ where: { email } })
-  if (!user) throw new NotFoundException('User not found')
+  if (user) {
+    const otp = generateOtp()
+    const otpExpiresAt = addMinutesToDate(new Date(), 10)
 
-  const otp = generateOtp()
-  const otpExpiresAt = addMinutesToDate(new Date(), 10)
+    await this.prisma.user.update({
+      where: { email },
+      data: { otp, otpExpiresAt }
+    })
 
-  await this.prisma.user.update({
-    where: { email },
-    data: { otp, otpExpiresAt }
-  })
+    await this.brevoService.sendOtpEmail(user.email, user.name, otp)
+  }
 
-  await this.brevoService.sendOtpEmail(user.email, user.name, otp)
-
-  return { message: 'OTP sent successfully' }
+  return { message: "If that email is registered, we've sent a verification code." }
 }
 
   async verifyOtpForReset(email: string, otp: string) {
