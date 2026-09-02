@@ -1,4 +1,4 @@
-import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator'
+import { IsArray, IsBoolean, IsEnum, IsIn, IsInt, IsNotEmpty, IsOptional, IsString, Matches, Max, Min } from 'class-validator'
 import { SocialPlatform } from '@prisma/client'
 
 export class UpdateProfileDto {
@@ -24,6 +24,7 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsString()
+  @IsNotEmpty()
   brandName?: string
 
   @IsOptional()
