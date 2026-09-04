@@ -94,4 +94,38 @@ async sendWelcomeEmail(toEmail: string, name: string) {
   })
 }
 
+// Day 1 → 18 onboarding drip. Keyed by step number (2-7) since step 1 is
+// sendWelcomeEmail above; templateId/subject map to the Brevo templates
+// created for the drip sequence.
+private readonly onboardingSteps: Record<number, { templateId: number; subject: string }> = {
+  2: { templateId: 5, subject: 'Connect Your Social Channels' },
+  3: { templateId: 6, subject: 'Let Your AI Agent Create Your First Post' },
+  4: { templateId: 7, subject: 'Stop Thinking About What to Post Every Day' },
+  5: { templateId: 8, subject: "Your AI Agent Doesn't Just Post. It Can Listen Too" },
+  6: { templateId: 9, subject: 'Your Social Media Should Do More Than Get Likes' },
+  7: { templateId: 10, subject: "You've Set It Up. Now Put Shoutly AI to Work" },
+}
+
+async sendOnboardingStepEmail(step: number, toEmail: string, name: string) {
+  const senderEmail = this.configService.get<string>('BREVO_SENDER_EMAIL')
+  const senderName = this.configService.get<string>('BREVO_SENDER_NAME')
+
+  if (!senderEmail || !senderName) {
+    throw new Error('Brevo sender config missing')
+  }
+
+  const config = this.onboardingSteps[step]
+  if (!config) {
+    throw new Error(`Unknown onboarding step: ${step}`)
+  }
+
+  await this.apiInstance.sendTransacEmail({
+    sender: { email: senderEmail, name: senderName },
+    to: [{ email: toEmail, name }],
+    subject: config.subject,
+    params: { name },
+    templateId: config.templateId,
+  })
+}
+
 }

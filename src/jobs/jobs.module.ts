@@ -5,6 +5,7 @@ import { FacebookModule } from '../social-media/facebook/facebook.module'
 import { JobsService } from './jobs.service'
 import { PostQueue } from './post.queue'
 import { PostWorker } from './post.worker'
+import { OnboardingDripService } from './onboarding-drip.service'
 import { BrevoModule } from '../brevo/brevo.module'
 @Module({
   imports: [
@@ -13,7 +14,7 @@ import { BrevoModule } from '../brevo/brevo.module'
     // FacebookModule,
     BrevoModule,
   ],
-  providers: [JobsService, PostQueue, PostWorker],
+  providers: [JobsService, PostQueue, PostWorker, OnboardingDripService],
   exports: [PostQueue],
 })
 

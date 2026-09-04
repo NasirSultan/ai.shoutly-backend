@@ -53,6 +53,8 @@ model User {
   timezone         String?
   language         String?
   note             Note?
+  onboardingStartedAt  DateTime?
+  sentOnboardingSteps  Int[]        @default([])
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -61,6 +63,7 @@ model User {
   @@index([createdAt])
   @@index([industryId])
   @@index([subIndustryId])
+  @@index([onboardingStartedAt])
 }
 
 

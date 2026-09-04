@@ -144,6 +144,16 @@ async updateProfile(email: string, profileData: any) {
     console.error('Welcome email failed:', emailError)
   }
 
+  // Anchor the onboarding drip sequence (steps 2-7) to the same moment the
+  // welcome email (step 1) goes out — but only once, so re-saving the
+  // profile later doesn't restart the whole sequence.
+  if (!updated.onboardingStartedAt) {
+    await this.prisma.user.update({
+      where: { email },
+      data: { onboardingStartedAt: new Date() },
+    })
+  }
+
   return updated
 }
 
