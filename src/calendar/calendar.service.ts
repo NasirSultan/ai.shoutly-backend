@@ -1,15 +1,31 @@
-import { Injectable,InternalServerErrorException ,NotFoundException} from '@nestjs/common'
+import { Injectable,InternalServerErrorException ,NotFoundException, BadRequestException} from '@nestjs/common'
 import { generatePostsForMonth } from './generators/calendar.generator'
 import { DateTime } from 'luxon'
 import { randomUUID } from 'crypto'
 import { prisma } from '../lib/prisma'
 import { PostQueue } from '../jobs/post.queue'
 import { normalizeTimezone } from '../common/utils/timezone.util'
+import { AutopostService } from '../outstand/autopost.service'
+import { SocialPlatform } from '@prisma/client'
 
 @Injectable()
 export class CalendarService {
 
-  constructor(private readonly postQueue: PostQueue) {}
+  constructor(
+    private readonly postQueue: PostQueue,
+    private readonly autopostService: AutopostService,
+  ) {}
+
+  private parseTargetPlatforms(raw?: string | SocialPlatform[]): SocialPlatform[] {
+    if (!raw) return []
+    if (Array.isArray(raw)) return raw
+    try {
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed as SocialPlatform[] : []
+    } catch {
+      return raw.split(',').map((s) => s.trim()).filter(Boolean) as SocialPlatform[]
+    }
+  }
 
 
   private toUTC(timeStr: string, timezone: string, baseDate?: Date): Date {
@@ -383,7 +399,7 @@ async getPlanByUser(userId: string) {
   async updatePost(
     userId: string,
     postId: string,
-    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string,timezone?: string },
+    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string,timezone?: string; targetPlatforms?: string | SocialPlatform[] },
     fileData?: { imageUrl: string; deleteUrl: string }
   ) {
     const post = await prisma.calendarPost.findUnique({
@@ -420,6 +436,9 @@ async getPlanByUser(userId: string) {
    }
     if (body.status) updatedData.status = body.status
     if (body.reelId !== undefined) updatedData.reelId = body.reelId
+    if (body.targetPlatforms !== undefined) {
+      updatedData.targetPlatforms = this.parseTargetPlatforms(body.targetPlatforms)
+    }
 
     let imageData: { imageUrl: string; deleteUrl: string } | undefined
     if (body.imageUrl) {
@@ -601,14 +620,18 @@ async getPostDetails(userId: string, postId: string) {
     }
   }
 
-  // Publishes a calendar post right away instead of waiting for its scheduled
-  // postTime. Reuses the exact same pipeline as the jobs module's scheduler:
-  // lock the post to 'POSTING' then hand it to PostQueue, which PostWorker
-  // (Outstand dispatch, status flip to POSTED/FAILED, Brevo email) already
-  // processes almost immediately. This method just skips the "is it due yet"
-  // check and the cron — everything after enqueue is identical.
+  // Publishes a calendar post right away. Uses AutopostService.publishImmediately()
+  // with targetPlatforms scoping — same Outstand dispatch as scheduled posts via
+  // PostWorker, but without waiting for postTime / cron.
   async publishNow(userId: string, postId: string) {
-    const post = await prisma.calendarPost.findUnique({ where: { id: postId } })
+    const post = await prisma.calendarPost.findUnique({
+      where: { id: postId },
+      include: {
+        content: true,
+        image: true,
+        reel: true,
+      },
+    })
 
     if (!post || post.userId !== userId) {
       return { success: false, message: 'Post not found or unauthorized' }
@@ -621,8 +644,6 @@ async getPostDetails(userId: string, postId: string) {
       }
     }
 
-    // Same locking pattern as jobs.service's checkDuePosts: flip to POSTING
-    // conditionally so a concurrent request/cron tick can't double-enqueue it.
     const locked = await prisma.calendarPost.updateMany({
       where: { id: postId, status: 'SCHEDULED' },
       data: { status: 'POSTING' },
@@ -632,9 +653,44 @@ async getPostDetails(userId: string, postId: string) {
       return { success: false, message: 'Post is already being processed' }
     }
 
-    await this.postQueue.addPublishJob(postId)
+    try {
+      const mediaUrl = post.image?.file || post.imageUrl || post.reel?.file || undefined
+      let platforms: string[]
 
-    return { success: true, message: 'Post is being published now' }
+      if (post.targetPlatforms?.length) {
+        platforms = post.targetPlatforms.map((p) => p.toLowerCase())
+      } else {
+        const accounts = await prisma.socialAccount.findMany({
+          where: { userId, status: 'active' },
+        })
+        platforms = accounts.map((a) => a.platform.toLowerCase())
+      }
+
+      if (!platforms.length) {
+        throw new BadRequestException('No connected social accounts to publish to')
+      }
+
+      await this.autopostService.publishImmediately(userId, {
+        content: post.content?.text || '',
+        platforms,
+        mediaUrls: mediaUrl ? [mediaUrl] : undefined,
+      })
+
+      await prisma.calendarPost.update({
+        where: { id: postId },
+        data: { status: 'POSTED' },
+      })
+
+      return { success: true, message: 'Post published successfully' }
+    } catch (error) {
+      await prisma.calendarPost.update({
+        where: { id: postId },
+        data: { status: 'FAILED' },
+      })
+
+      const message = error instanceof Error ? error.message : 'Failed to publish post'
+      return { success: false, message }
+    }
   }
 
   // User-only variant of createPost. Behaves the same (creates a Content row
@@ -646,7 +702,7 @@ async getPostDetails(userId: string, postId: string) {
   // normally — only the underlying Content/Image rows are isolated.
   async createManualPost(
     userId: string,
-    body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string },
+    body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | SocialPlatform[] },
     imageData?: { imageUrl: string; deleteUrl: string }
   ) {
     const { postTime, contentText } = body
@@ -709,6 +765,8 @@ async getPostDetails(userId: string, postId: string) {
       : await this.getUserTimezone(userId)
     const utcPostTime = DateTime.fromISO(postTime, { zone: userTz }).toUTC().toJSDate()
 
+    const targetPlatforms = this.parseTargetPlatforms(body.targetPlatforms)
+
     const post = await prisma.calendarPost.create({
       data: {
         userId,
@@ -718,7 +776,8 @@ async getPostDetails(userId: string, postId: string) {
         imageUrl,
         type: 'IMAGE',
         postTime: utcPostTime,
-        status: 'SCHEDULED'
+        status: 'SCHEDULED',
+        targetPlatforms,
       }
     })
 
@@ -744,99 +803,10 @@ async getPostDetails(userId: string, postId: string) {
   async updateManualPost(
     userId: string,
     postId: string,
-    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string },
+    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | SocialPlatform[] },
     fileData?: { imageUrl: string; deleteUrl: string }
   ) {
-    const post = await prisma.calendarPost.findUnique({ where: { id: postId } })
-
-    if (!post || post.userId !== userId) {
-      return { success: false, message: 'Post not found or unauthorized' }
-    }
-
-    const reservedSubIndustryId = await this.getReservedSubIndustryId()
-
-    let updatedData: any = {}
-
-    if (body.postTime) {
-      updatedData.postTime = DateTime
-        .fromISO(body.postTime, { zone: body.timezone })
-        .toUTC()
-        .toISO()
-    }
-    if (body.status) updatedData.status = body.status
-    if (body.reelId !== undefined) updatedData.reelId = body.reelId
-
-    let imageData: { imageUrl: string; deleteUrl: string } | undefined
-    if (body.imageUrl) {
-      imageData = { imageUrl: body.imageUrl, deleteUrl: '' }
-    } else if (fileData) {
-      imageData = fileData
-    }
-
-    const operations: Array<Promise<{ id: string }>> = []
-
-    if (body.contentText) {
-      operations.push(
-        prisma.content.create({
-          data: { text: body.contentText, subIndustryId: reservedSubIndustryId }
-        })
-      )
-    }
-
-    if (imageData) {
-      operations.push(
-        prisma.image.create({
-          data: {
-            file: imageData.imageUrl,
-            deleteUrl: imageData.deleteUrl,
-            text: false,
-            subIndustryId: reservedSubIndustryId
-          }
-        })
-      )
-    }
-
-    if (operations.length) {
-      const results = await Promise.all(operations)
-
-      if (body.contentText) {
-        const newContent = results.find(r => 'text' in r)
-        if (newContent) updatedData.contentId = newContent.id
-      }
-
-      if (imageData) {
-        const newImage = results.find(r => 'file' in r)
-        if (newImage) {
-          updatedData.imageId = newImage.id
-          updatedData.imageUrl = imageData.imageUrl
-          updatedData.type = 'IMAGE'
-        }
-      }
-    }
-
-    try {
-      await prisma.calendarPost.update({
-        where: { id: postId },
-        data: updatedData
-      })
-
-      const postWithRelations = await prisma.calendarPost.findUnique({
-        where: { id: postId },
-        include: {
-          content: { include: { hashtags: { include: { hashtag: true } } } },
-          reel: true,
-          image: true,
-        },
-      })
-
-      return {
-        success: true,
-        message: 'Post updated',
-        post: this.formatPost(postWithRelations)
-      }
-    } catch {
-      throw new InternalServerErrorException('Failed to update post')
-    }
+    return this.updatePost(userId, postId, body, fileData)
   }
 
 }

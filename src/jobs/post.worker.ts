@@ -138,8 +138,8 @@ export class PostWorker implements OnModuleInit {
   private worker!: Worker<PublishJobData>
 
   // 🎯 Hardcoded here based on your controller configuration—ideally read from config/env variables
-  private readonly outstandBaseUrl = 'https://api.outstand.so/v1'
-  private readonly outstandApiKey = 'ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta'
+  private readonly outstandBaseUrl = process.env.OUTSTAND_BASE_URL ?? 'https://api.outstand.so/v1'
+  private readonly outstandApiKey = process.env.OUTSTAND_API_KEY ?? ''
 
   constructor(
     private readonly redisService: RedisService,
@@ -229,12 +229,18 @@ export class PostWorker implements OnModuleInit {
     if (post.status !== 'POSTING') throw new Error(`Post ${calendarPostId} already handled: ${post.status}`)
 
     const { user } = post
-    if (!user.socialAccounts || user.socialAccounts.length === 0) {
-      throw new Error(`User ${user.id} has no connected Outstand channels verified available`)
+    const targetPlatforms = post.targetPlatforms ?? []
+    const activeAccounts = user.socialAccounts.filter((acc) => {
+      if (!targetPlatforms.length) return true
+      return targetPlatforms.includes(acc.platform)
+    })
+
+    if (!activeAccounts.length) {
+      throw new Error(`User ${user.id} has no connected Outstand channels for the selected platforms`)
     }
 
     // 2. Map structural Outstand profile IDs array
-    const outstandAccountIds = user.socialAccounts.map((acc) => acc.outstandAccountId)
+    const outstandAccountIds = activeAccounts.map((acc) => acc.outstandAccountId)
 
     // 3. Construct unified container asset payload
     const container: any = {
@@ -280,7 +286,7 @@ export class PostWorker implements OnModuleInit {
         const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
         const postedAt = DateTime.now().setZone(tz).toFormat("MMM dd, yyyy 'at' hh:mm a")
         const platformRows = buildPlatformRowsHtml(
-          user.socialAccounts.map((acc) => ({
+          activeAccounts.map((acc) => ({
             platform: acc.platform || 'Unknown',
             accountName: acc.username || acc.platform || 'Connected account',
             postedAt,

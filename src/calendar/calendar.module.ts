@@ -5,8 +5,9 @@ import { AuthModule } from "../auth/auth.module";
 import { ImgbbService } from '../lib/imgbb/imgbb.service'
 import { JobsModule } from '../jobs/jobs.module'
 import { AuditLogModule } from '../audit-log/audit-log.module'
+import { AutopostModule } from '../outstand/autopost.module'
 @Module({
-  imports: [AuthModule, JobsModule, AuditLogModule],
+  imports: [AuthModule, JobsModule, AuditLogModule, AutopostModule],
   providers: [CalendarService,ImgbbService],
   controllers: [CalendarController],
 })

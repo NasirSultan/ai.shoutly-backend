@@ -71,7 +71,7 @@ export class DashboardService {
       }),
       this.autopostService.getConnectionStatus(userId),
       this.autopostService.getAccountsOverviewAnalytics(userId),
-      this.autopostService.calculateUserDashboardMetrics(userId, fourteenDaysAgo.toISOString(), now.toISOString()),
+      this.autopostService.calculateUserDashboardMetricsV2(userId, fourteenDaysAgo.toISOString(), now.toISOString()),
       prisma.calendarPost.count({ where: { userId } }),
       prisma.calendarPost.count({ where: { userId, status: 'SCHEDULED' } }),
       prisma.calendarPost.findFirst({
