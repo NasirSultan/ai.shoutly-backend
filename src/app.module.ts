@@ -29,6 +29,7 @@ import { IndustryRequestsModule } from './industry-requests/industry-requests.mo
 import { BookDemoModule } from './book-demo/book-demo.module'
 import { CalendarificModule } from './calendarific/calendarific.module'
 import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
+import { MetaModule } from './meta/meta.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),LogoOverlayModule, FacebookModule,IndustriesModule, AuthModule,
@@ -57,6 +58,7 @@ import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
   BookDemoModule,
   CalendarificModule,
   WebsiteWatcherModule,
+  MetaModule,
 ],
   controllers: [AppController],
   providers: [AppService],

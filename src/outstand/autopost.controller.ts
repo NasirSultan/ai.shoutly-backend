@@ -12,6 +12,7 @@ import {
   UseInterceptors,
   HttpCode,
   HttpStatus,
+  Headers,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Express } from 'express';
@@ -29,9 +30,15 @@ import {
 
 // Networks that don't need OAuth-app credentials passed explicitly (e.g. Bluesky
 // uses handle + app password instead) can be added here with empty defaults.
+const metaAppKey = process.env.FB_APP_ID || process.env.META_APP_ID;
+const metaAppSecret = process.env.FB_APP_SECRET || process.env.META_APP_SECRET;
+
 const NETWORK_ENV_CREDENTIALS: Record<string, { key?: string; secret?: string }> = {
   x: { key: process.env.X_CLIENT_ID || process.env.X_CONSUMER_KEY, secret: process.env.X_CLIENT_SECRET || process.env.X_SECRET_KEY },
   twitter: { key: process.env.X_CLIENT_ID || process.env.X_CONSUMER_KEY, secret: process.env.X_CLIENT_SECRET || process.env.X_SECRET_KEY },
+  facebook: { key: metaAppKey, secret: metaAppSecret },
+  instagram: { key: metaAppKey, secret: metaAppSecret },
+  threads: { key: metaAppKey, secret: metaAppSecret },
 };
 
 @Controller('autopost')
@@ -62,8 +69,12 @@ export class AutopostController {
   // OAuth callback arrives with ?session=<token> instead of account_id.
   @Get('pending/:sessionToken')
   @UseGuards(AuthGuard)
-  getPendingConnection(@Param('sessionToken') sessionToken: string) {
-    return this.autopostService.getPendingConnection(sessionToken);
+  getPendingConnection(
+    @Req() req,
+    @Param('sessionToken') sessionToken: string,
+    @Query('state') state: string,
+  ) {
+    return this.autopostService.getPendingConnection(req.user.id, sessionToken, state);
   }
 
   @Post('accounts')
@@ -96,8 +107,19 @@ export class AutopostController {
     @Query('to') to?: string,
   ) {
     const userId = req.user.id;
-    // Pass the query strings from the frontend directly into your service method
     return this.autopostService.calculateUserDashboardMetrics(userId, from, to);
+  }
+
+  @Get('analytics/v2')
+  @UseGuards(AuthGuard)
+  async getDashboardAnalyticsV2(
+    @Req() req,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('platform') platform?: string,
+  ) {
+    const userId = req.user.id;
+    return this.autopostService.calculateUserDashboardMetricsV2(userId, from, to, platform);
   }
 
   @Get('connection-status')
@@ -169,6 +191,7 @@ export class AutopostController {
 
   @Post('fix-accounts')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   async fixAccountPlatforms() {
     return this.autopostService.fixAccountPlatforms();
   }
@@ -192,8 +215,23 @@ export class AutopostController {
   // Clear public route for Outstand to hit directly via webhook configurations
   @Post('webhook')
   @HttpCode(HttpStatus.OK)
-  webhookReceiver(@Body() payload: any) {
-    return this.autopostService.handleIncomingWebhook(payload);
+  async webhookReceiver(
+    @Req() req,
+    @Headers('x-outstand-signature') signature: string | undefined,
+    @Body() payload: any,
+  ) {
+    const replayKey = await this.autopostService.verifyWebhookSignature(
+      req.rawBody || Buffer.from(JSON.stringify(payload)),
+      signature,
+    );
+    try {
+      const result = await this.autopostService.handleIncomingWebhook(payload);
+      await this.autopostService.markWebhookProcessed(replayKey);
+      return result;
+    } catch (error) {
+      await this.autopostService.releaseWebhook(replayKey);
+      throw error;
+    }
   }
 
   // Legacy standalone endpoint — kept for backward compatibility, but does
@@ -203,6 +241,7 @@ export class AutopostController {
   // any new integration work.
   @Post('finalize-connection')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   async finalizeSocial(@Body() body: { sessionToken: string; selectedPageIds?: string[] }) {
     if (!body.sessionToken) {
       throw new BadRequestException('Missing session token');
@@ -214,9 +253,8 @@ export class AutopostController {
       throw new BadRequestException('selectedPageIds is required — call GET pending/:sessionToken first and let the user choose.');
     }
 
-    const outstandApiKey =
-      'ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta';
-    const outstandBaseUrl = 'https://api.outstand.so/v1';
+    const outstandApiKey = process.env.OUTSTAND_API_KEY ?? '';
+    const outstandBaseUrl = process.env.OUTSTAND_BASE_URL ?? 'https://api.outstand.so/v1';
     const selectedPageIds = body.selectedPageIds;
 
     try {
@@ -275,6 +313,7 @@ export class AutopostController {
       network_unique_id?: string;
       username?: string;
       network?: string;
+      connectionState?: string;
     },
   ) {
     const userId = req.user.id;
@@ -287,6 +326,7 @@ export class AutopostController {
         userId,
         body.sessionToken,
         body.selectedPageIds ?? [],
+        body.connectionState ?? '',
       );
     }
 
@@ -297,7 +337,7 @@ export class AutopostController {
       // is passed through only as a hint for that mismatch check; if it's
       // missing and Outstand verification also fails, saveDirectConnection
       // will reject rather than guess.
-      return this.autopostService.saveDirectConnection(userId, {
+      return this.autopostService.completeDirectConnection(userId, body.connectionState ?? '', {
         outstandAccountId: body.account_id,
         networkUniqueId: body.network_unique_id ?? '',
         username: body.username ?? 'Unknown Account',
@@ -314,6 +354,7 @@ export class AutopostController {
         userId,
         body.network,
         body.username,
+        body.connectionState ?? '',
       );
     }
 
@@ -325,6 +366,7 @@ export class AutopostController {
   // 🔬 TEMPORARY TESTING ENDPOINT: Get all connected social accounts
   @Post('test-fetch-accounts')
   @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   async getAllAccountsForTesting() {
     return this.autopostService.getAllAccountsDebug();
   }

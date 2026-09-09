@@ -6,7 +6,7 @@ import { SchedulePostDto } from './dto/schedule-post.dto';
 import axios from 'axios';
 import { prisma } from '../lib/prisma';
 import { Express } from 'express';
-import { createHash } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { RedisService } from '../common/redis/redis.service';
 
 // Generic, publicly-documented social-media-marketing benchmark posting
@@ -32,7 +32,7 @@ const PLATFORM_BENCHMARK_TIMES: Record<string, { time: string; note: string }> =
 @Injectable()
 export class AutopostService {
   private prisma = prisma;
-  private readonly outstandApiKey = "ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta";
+  private readonly outstandApiKey = process.env.OUTSTAND_API_KEY ?? '';
   private readonly outstandBaseUrl = 'https://api.outstand.so/v1';
   // ✅ Add this private helper at the top of AutopostService class
   private normalizePlatform(raw: string | null | undefined): SocialPlatform {
@@ -64,6 +64,99 @@ export class AutopostService {
     }
   }
 
+  private connectionKey(state: string) {
+    return `outstand:connection:${state}`;
+  }
+
+  private sessionKey(sessionToken: string) {
+    return `outstand:session:${createHash('sha256').update(sessionToken).digest('hex')}`;
+  }
+
+  private finalizationKey(state: string) {
+    return `outstand:connection-finalizing:${state}`;
+  }
+
+  private async acquireConnectionFinalization(state: string) {
+    const acquired = await this.redisService.getClient().set(
+      this.finalizationKey(state),
+      '1',
+      { NX: true, EX: 30 },
+    );
+    if (!acquired) throw new BadRequestException('This connection is already being finalized.');
+  }
+
+  private async finishConnectionFinalization(state: string) {
+    await Promise.all([
+      this.redisService.getClient().del(this.connectionKey(state)),
+      this.redisService.getClient().del(this.finalizationKey(state)),
+    ]);
+  }
+
+  private async releaseConnectionFinalization(state: string) {
+    await this.redisService.getClient().del(this.finalizationKey(state));
+  }
+
+  private async readConnection(state: string, userId: string, consume = false) {
+    if (!state) throw new BadRequestException('Connection state is required.');
+    const key = this.connectionKey(state);
+    const raw = consume
+      ? await this.redisService.getClient().getDel(key)
+      : await this.redisService.getClient().get(key);
+    if (!raw) throw new BadRequestException('Connection state is invalid or expired.');
+    const connection = JSON.parse(raw) as {
+      userId: string;
+      platform: string;
+      redirectUri: string;
+      baselineAccountIds: string[];
+    };
+    if (connection.userId !== userId) {
+      throw new BadRequestException('Connection state does not belong to this user.');
+    }
+    return connection;
+  }
+
+  private async assertAccountMayBeLinked(
+    userId: string,
+    outstandAccountId: string,
+    baselineAccountIds: string[],
+  ) {
+    const existing = await this.prisma.socialAccount.findUnique({
+      where: { outstandAccountId },
+      select: { userId: true },
+    });
+    if (existing?.userId && existing.userId !== userId) {
+      throw new BadRequestException('This social account is already linked to another Shoutly user.');
+    }
+    if (!existing && baselineAccountIds.includes(outstandAccountId)) {
+      throw new BadRequestException('This account was not created by the current connection flow.');
+    }
+  }
+
+  async verifyWebhookSignature(rawBody: Buffer, signature?: string) {
+    const secret = process.env.OUTSTAND_WEBHOOK_SECRET;
+    if (!secret || !signature?.startsWith('sha256=')) {
+      throw new BadRequestException('Webhook signature is missing or webhook verification is not configured.');
+    }
+    const expected = `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+    const supplied = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expected);
+    if (supplied.length !== expectedBuffer.length || !timingSafeEqual(supplied, expectedBuffer)) {
+      throw new BadRequestException('Invalid webhook signature.');
+    }
+    const replayKey = `outstand:webhook:${createHash('sha256').update(signature).digest('hex')}`;
+    const fresh = await this.redisService.getClient().set(replayKey, 'processing', { NX: true, EX: 300 });
+    if (!fresh) throw new BadRequestException('Duplicate webhook delivery.');
+    return replayKey;
+  }
+
+  async markWebhookProcessed(replayKey: string) {
+    await this.redisService.getClient().set(replayKey, 'processed', { EX: 60 * 60 * 24 * 30 });
+  }
+
+  async releaseWebhook(replayKey: string) {
+    await this.redisService.getClient().del(replayKey);
+  }
+
   // Guards against the exact same post going out twice — e.g. a
   // double-click on Publish, or a frontend retrying a request that
   // actually succeeded. Locks on (user + content + platforms) for a short
@@ -80,9 +173,46 @@ export class AutopostService {
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
     try {
       console.log('Outstand Config:', { url: this.outstandBaseUrl, hasKey: !!this.outstandApiKey, platform: dto.platform });
+      const productionRedirect =
+        `${(process.env.FRONTEND_URL || 'https://shoutlyai.com').replace(/\/$/, '')}/dashboards/settings/accounts`;
+      const requestedRedirect = dto.redirectUri || productionRedirect;
+      const redirect = new URL(requestedRedirect);
+      const allowedOrigins = new Set([
+        new URL(productionRedirect).origin,
+        'https://shoutlyai.com',
+        'https://www.shoutlyai.com',
+      ]);
+      if (process.env.NODE_ENV !== 'production') {
+        allowedOrigins.add('http://localhost:3000');
+        allowedOrigins.add('http://127.0.0.1:3000');
+      }
+      if (
+        !allowedOrigins.has(redirect.origin) ||
+        ![
+          '/dashboards/settings/accounts',
+          '/dashboards/custom-posting',
+        ].includes(redirect.pathname)
+      ) {
+        throw new BadRequestException('Redirect URI is not allowed.');
+      }
 
-      // 1. Correct endpoint formatting: /v1/social-networks/:network/auth-url
-      // 2. Change method from GET to POST
+      const existingResponse = await axios.get(`${this.outstandBaseUrl}/social-accounts`, {
+        headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+      });
+      const baselineAccountIds = (existingResponse.data?.data || [])
+        .map((account: any) => String(account.id));
+      const state = randomBytes(32).toString('hex');
+      await this.redisService.getClient().set(
+        this.connectionKey(state),
+        JSON.stringify({
+          userId,
+          platform: dto.platform,
+          redirectUri: requestedRedirect,
+          baselineAccountIds,
+        }),
+        { EX: 600 },
+      );
+
       const response = await fetch(`${this.outstandBaseUrl}/social-networks/${dto.platform}/auth-url`, {
         method: 'POST', 
         headers: {
@@ -91,8 +221,9 @@ export class AutopostService {
         },
         // 3. You MUST provide the redirect_uri in the body payload
         body: JSON.stringify({
-          redirect_uri: dto.redirectUri || 'https://shoutlyai.com/dashboards/settings/accounts',
-          state: userId // You can safely pass your state/userId here inside the body object
+          redirect_uri: requestedRedirect,
+          tenant_id: userId,
+          force_account_selection: true,
         }),
       });
 
@@ -103,7 +234,7 @@ export class AutopostService {
       }
       const resData = await response.json();
       console.log('Outstand Success Payload:', resData); // <--- Add this
-      return { redirectUrl: resData.data.auth_url };
+      return { redirectUrl: resData.data.auth_url, connectionState: state };
       
     } catch (error) {
       console.error('Outstand connection error:', error);
@@ -119,9 +250,9 @@ export class AutopostService {
       WHERE "userId" = ${userId}
     `;
 
-    const byPlatform: Record<string, any> = {};
+    const byPlatform: Record<string, any[]> = {};
     for (const acc of accounts) {
-      byPlatform[acc.platform] = acc;
+      (byPlatform[acc.platform] ||= []).push(acc);
     }
 
     // Kept in sync with normalizePlatform()'s map above
@@ -139,15 +270,14 @@ export class AutopostService {
     ];
 
     const platforms = SUPPORTED_PLATFORMS.map((platform) => {
-      const acc = byPlatform[platform];
-      if (!acc) {
+      const platformAccounts = byPlatform[platform] || [];
+      if (platformAccounts.length === 0) {
         return { platform, connected: false, accounts: [] };
       }
       return {
         platform,
-        connected: acc.status === 'active',
-        accounts: [
-          {
+        connected: platformAccounts.some((acc) => acc.status === 'active'),
+        accounts: platformAccounts.map((acc) => ({
             id: acc.id,
             outstandAccountId: acc.outstandAccountId,
             username: acc.username,
@@ -157,8 +287,7 @@ export class AutopostService {
             // Pinterest only — null for every other platform.
             defaultBoardId: acc.defaultBoardId,
             defaultBoardName: acc.defaultBoardName,
-          },
-        ],
+          })),
       };
     });
 
@@ -220,7 +349,7 @@ export class AutopostService {
           const response = await axios.get(url, {
             headers: { Authorization: `Bearer ${this.outstandApiKey}` },
           });
-          const dataPayload = response.data?.data || response.data || {};
+          const dataPayload = response.data?.data || response.data?.metrics || response.data || {};
 
           const followers = Number(dataPayload.followers_count || dataPayload.followers || 0);
           const engagementObj = dataPayload.engagement || {};
@@ -236,13 +365,27 @@ export class AutopostService {
           totalReachCombined += reach;
           totalEngagementCombined += engagement;
 
-          platformStats[platformKey] = {
+          const current = platformStats[platformKey] || {
+            followers: 0,
+            reach: 0,
+            engagement: 0,
+            engagementRate: 0,
+            accounts: {},
+          };
+          current.followers += followers;
+          current.reach += reach;
+          current.engagement += engagement;
+          current.engagementRate = current.reach > 0
+            ? Math.round((current.engagement / current.reach) * 10000) / 100
+            : 0;
+          current.accounts[channel.outstandAccountId] = {
             followers,
             reach,
             engagement,
             engagementRate,
             username: channel.username,
           };
+          platformStats[platformKey] = current;
         } catch (err) {
           console.error(`[Accounts Overview] Skipped ${channel.outstandAccountId}:`, err.response?.data || err.message);
         }
@@ -613,7 +756,11 @@ export class AutopostService {
   // connecting any of them — lets the frontend show a real picker instead
   // of us guessing. Call this first; the user's choice from here is what
   // gets passed to finalizeTwoStepConnection() below.
-  async getPendingConnection(sessionToken: string) {
+  async getPendingConnection(userId: string, sessionToken: string, state: string) {
+    const connection = await this.readConnection(state, userId);
+    if (connection.platform !== 'facebook') {
+      throw new BadRequestException('Connection state platform mismatch.');
+    }
     const pendingResponse = await fetch(`${this.outstandBaseUrl}/social-accounts/pending/${sessionToken}`, {
       method: 'GET',
       headers: { 'Authorization': `Bearer ${this.outstandApiKey}` }
@@ -621,8 +768,21 @@ export class AutopostService {
     if (!pendingResponse.ok) throw new BadRequestException('Invalid or expired Outstand session token.');
 
     const resBody = await pendingResponse.json();
+    const returnedTenant = resBody?.data?.tenant_id ?? resBody?.tenant_id;
+    if (!returnedTenant || returnedTenant !== userId) {
+      throw new BadRequestException('Outstand session tenant did not match the initiating user.');
+    }
     const availablePages = resBody?.data?.availablePages || [];
     if (availablePages.length === 0) throw new BadRequestException('No authorized Facebook pages found for this session.');
+    await this.redisService.getClient().set(
+      this.sessionKey(sessionToken),
+      JSON.stringify({
+        userId,
+        state,
+        availablePageIds: availablePages.map((page: any) => String(page.id)),
+      }),
+      { EX: 600 },
+    );
 
     return { success: true, availablePages };
   }
@@ -632,11 +792,31 @@ export class AutopostService {
   // plus real user input. Previously this silently connected EVERY page
   // Facebook granted, with no way for the user to pick just one, which is
   // exactly the "no selection screen ever shows" bug this replaces.
-  async finalizeTwoStepConnection(userId: string, sessionToken: string, selectedPageIds: string[]) {
+  async finalizeTwoStepConnection(userId: string, sessionToken: string, selectedPageIds: string[], state: string) {
     if (!selectedPageIds || selectedPageIds.length === 0) {
       throw new BadRequestException('selectedPageIds is required — call GET pending first and let the user choose.');
     }
+    let finalizationAcquired = false;
     try {
+      const sessionRaw = await this.redisService.getClient().get(this.sessionKey(sessionToken));
+      if (!sessionRaw) throw new BadRequestException('Connection session is invalid or expired.');
+      const session = JSON.parse(sessionRaw) as {
+        userId: string;
+        state: string;
+        availablePageIds: string[];
+      };
+      if (session.userId !== userId || session.state !== state) {
+        throw new BadRequestException('Connection session does not belong to this user.');
+      }
+      if (selectedPageIds.some((id) => !session.availablePageIds.includes(String(id)))) {
+        throw new BadRequestException('A selected page was not authorized by this connection session.');
+      }
+      const connection = await this.readConnection(state, userId);
+      if (connection.platform !== 'facebook') {
+        throw new BadRequestException('Connection state platform mismatch.');
+      }
+      await this.acquireConnectionFinalization(state);
+      finalizationAcquired = true;
       const finalizeResponse = await fetch(`${this.outstandBaseUrl}/social-accounts/pending/${sessionToken}/finalize`, {
       method: 'POST',
       headers: {
@@ -656,25 +836,9 @@ export class AutopostService {
     const activatedAccounts = finalizeData.connectedAccounts || []; 
     const savedAccounts: any[] = []; 
 
-      // ✅ Raw SQL upsert — bypasses Platform vs SocialPlatform enum mismatch.
-      // Same ownership-transfer fix as saveDirectConnection(): reassigns
-      // "userId" on conflict so reconnecting a Page under a different app
-      // user doesn't leave it silently owned by whoever connected it first.
-      const previousOwnerIds = new Set<string>()
       for (const acc of activatedAccounts) {
         const username = acc.username || acc.nickname || 'Facebook Page'
-
-        const existing = await this.prisma.socialAccount.findUnique({
-          where: { outstandAccountId: acc.id },
-          select: { userId: true },
-        })
-        if (existing && existing.userId !== userId) previousOwnerIds.add(existing.userId)
-
-        await this.prisma.$executeRaw`
-          DELETE FROM "SocialAccount"
-          WHERE "userId" = ${userId}
-          AND platform = 'FACEBOOK'::"SocialPlatform"
-        `
+        await this.assertAccountMayBeLinked(userId, acc.id, connection.baselineAccountIds);
 
         await this.prisma.$executeRaw`
           INSERT INTO "SocialAccount" (id, "userId", "outstandAccountId", platform, username, "avatarUrl", status, "createdAt", "updatedAt")
@@ -691,38 +855,21 @@ export class AutopostService {
           )
           ON CONFLICT ("outstandAccountId")
           DO UPDATE SET
-            "userId"   = ${userId},
             platform   = 'FACEBOOK'::"SocialPlatform",
             username   = ${username},
             "avatarUrl" = NULL,
             status     = 'active',
             "updatedAt" = NOW()
+          WHERE "SocialAccount"."userId" = ${userId}
         `
 
         const saved = await this.prisma.$queryRaw<any[]>`
           SELECT * FROM "SocialAccount" WHERE "outstandAccountId" = ${acc.id}
         `
-        savedAccounts.push(saved[0])
-      }
-
-      // Clean up connectedSocials for anyone who just lost their last
-      // Facebook account to this reassignment.
-      for (const previousOwnerId of previousOwnerIds) {
-        const remaining = await this.prisma.socialAccount.count({
-          where: { userId: previousOwnerId, platform: 'FACEBOOK', status: 'active' },
-        })
-        if (remaining === 0) {
-          const previousOwner = await this.prisma.user.findUnique({
-            where: { id: previousOwnerId },
-            select: { connectedSocials: true },
-          })
-          if (previousOwner) {
-            await this.prisma.user.update({
-              where: { id: previousOwnerId },
-              data: { connectedSocials: { set: previousOwner.connectedSocials.filter((p) => p !== 'FACEBOOK') } },
-            })
-          }
+        if (!saved[0] || saved[0].userId !== userId) {
+          throw new BadRequestException('This Facebook Page is already linked to another Shoutly user.')
         }
+        savedAccounts.push(saved[0])
       }
 
       // Update connectedSocials on user
@@ -741,6 +888,8 @@ export class AutopostService {
           }
         })
       }
+      await this.finishConnectionFinalization(state);
+      await this.redisService.getClient().del(this.sessionKey(sessionToken));
 
     return { 
       success: true, 
@@ -750,6 +899,7 @@ export class AutopostService {
     };        
     
     } catch (error) {
+          if (finalizationAcquired) await this.releaseConnectionFinalization(state);
           console.error('Error in Facebook structural execution:', error);
           throw error;
         }
@@ -776,11 +926,73 @@ export class AutopostService {
     }
   }
 
+  private async verifyOutstandAccountForUser(
+    userId: string,
+    outstandAccountId: string,
+    expectedPlatform: string,
+  ) {
+    const response = await axios.get(`${this.outstandBaseUrl}/social-accounts`, {
+      headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+      params: { id: outstandAccountId, tenant_id: userId },
+    });
+    const accounts: any[] = response.data?.data || [];
+    const account = accounts.find((item) => String(item.id) === outstandAccountId);
+    if (
+      !account ||
+      String(account.tenant_id || '') !== userId ||
+      String(account.network || '').toLowerCase() !== expectedPlatform.toLowerCase()
+    ) {
+      throw new BadRequestException(
+        'Outstand did not bind this account to your Shoutly connection. Please reconnect and try again.',
+      );
+    }
+    return account;
+  }
+
+  async completeDirectConnection(
+    userId: string,
+    state: string,
+    details: {
+      outstandAccountId: string;
+      networkUniqueId: string;
+      username: string;
+      platform: string;
+    },
+  ) {
+    const connection = await this.readConnection(state, userId);
+    if (
+      details.platform &&
+      connection.platform.toLowerCase() !== details.platform.toLowerCase()
+    ) {
+      throw new BadRequestException('Connection state platform mismatch.');
+    }
+    const verifiedAccount = await this.verifyOutstandAccountForUser(
+      userId,
+      details.outstandAccountId,
+      connection.platform,
+    );
+    await this.acquireConnectionFinalization(state);
+    try {
+      const result = await this.saveDirectConnection(userId, {
+        ...details,
+        username: verifiedAccount.username || details.username,
+        platform: connection.platform,
+        baselineAccountIds: [],
+      });
+      await this.finishConnectionFinalization(state);
+      return result;
+    } catch (error) {
+      await this.releaseConnectionFinalization(state);
+      throw error;
+    }
+  }
+
   async saveDirectConnection(userId: string, details: {
     outstandAccountId: string,
     networkUniqueId: string,
     username: string,
-    platform: string
+    platform: string,
+    baselineAccountIds?: string[],
   }) {
     try {
       const verifiedNetwork = await this.verifyOutstandNetwork(details.outstandAccountId)
@@ -791,6 +1003,11 @@ export class AutopostService {
         )
       }
       const platformEnum = this.normalizePlatform(verifiedNetwork || details.platform)
+      await this.assertAccountMayBeLinked(
+        userId,
+        details.outstandAccountId,
+        details.baselineAccountIds ?? [],
+      )
 
       // Outstand account ids are globally unique (one row per outstandAccountId
       // across ALL users). If this same account was already connected under a
@@ -799,18 +1016,6 @@ export class AutopostService {
       // silently leave it owned by the old user while telling the NEW user's
       // connectedSocials it's connected. That mismatch is exactly what caused
       // "no accounts show up, but the platform says connected" bugs.
-      const existing = await this.prisma.socialAccount.findUnique({
-        where: { outstandAccountId: details.outstandAccountId },
-        select: { userId: true, platform: true },
-      })
-      const previousOwnerId = existing && existing.userId !== userId ? existing.userId : null
-
-      await this.prisma.$executeRaw`
-        DELETE FROM "SocialAccount"
-        WHERE "userId" = ${userId}
-        AND platform = ${platformEnum}::"SocialPlatform"
-      `
-
       // ✅ Raw upsert bypasses Prisma enum type mismatch (Platform vs SocialPlatform).
       // Reassigns "userId" on conflict — whoever most recently completed OAuth
       // for this account has proven current authorization, so ownership
@@ -830,38 +1035,19 @@ export class AutopostService {
         )
         ON CONFLICT ("outstandAccountId")
         DO UPDATE SET
-          "userId" = ${userId},
           platform = ${platformEnum}::"SocialPlatform",
           username = ${details.username},
           status = 'active',
           "updatedAt" = NOW()
+        WHERE "SocialAccount"."userId" = ${userId}
       `
 
       // Fetch the saved record to return it
       const accountRecord = await this.prisma.$queryRaw<any[]>`
         SELECT * FROM "SocialAccount" WHERE "outstandAccountId" = ${details.outstandAccountId}
       `
-
-      // If ownership was just transferred away from someone else, drop the
-      // platform from their connectedSocials if they have no other account
-      // for it left — otherwise they'd be left in the same "says connected,
-      // isn't" state we just fixed for the new owner.
-      if (previousOwnerId) {
-        const remaining = await this.prisma.socialAccount.count({
-          where: { userId: previousOwnerId, platform: platformEnum, status: 'active' },
-        })
-        if (remaining === 0) {
-          const previousOwner = await this.prisma.user.findUnique({
-            where: { id: previousOwnerId },
-            select: { connectedSocials: true },
-          })
-          if (previousOwner) {
-            await this.prisma.user.update({
-              where: { id: previousOwnerId },
-              data: { connectedSocials: { set: previousOwner.connectedSocials.filter((p) => p !== platformEnum) } },
-            })
-          }
-        }
+      if (!accountRecord[0] || accountRecord[0].userId !== userId) {
+        throw new BadRequestException('This social account is already linked to another Shoutly user.')
       }
 
       // Update connectedSocials on user
@@ -891,6 +1077,7 @@ export class AutopostService {
 
     } catch (error) {
       console.error('Error saving direct network profile entry:', error)
+      if (error instanceof BadRequestException || error instanceof NotFoundException) throw error
       throw new InternalServerErrorException('Database sync failed during direct token assembly.')
     }
   }
@@ -902,25 +1089,55 @@ export class AutopostService {
   // This looks that username up against Outstand's own account list to
   // recover the real outstandAccountId, then finishes the connection the
   // same way saveDirectConnection() would.
-  async resolveAndSaveByUsername(userId: string, network: string, username: string) {
-    const response = await axios.get(`${this.outstandBaseUrl}/social-accounts`, {
-      headers: { Authorization: `Bearer ${this.outstandApiKey}` },
-    })
-    const accounts: any[] = response.data?.data || []
-    const match = accounts.find(
-      (a) => a.network?.toLowerCase() === network.toLowerCase() && a.username?.toLowerCase() === username.toLowerCase(),
-    )
+  async resolveAndSaveByUsername(userId: string, network: string, username: string, state: string) {
+    const connection = await this.readConnection(state, userId)
+    if (connection.platform.toLowerCase() !== network.toLowerCase()) {
+      throw new BadRequestException('Connection state platform mismatch.')
+    }
+    await this.acquireConnectionFinalization(state)
+    const lookup = async () => {
+      const response = await axios.get(`${this.outstandBaseUrl}/social-accounts`, {
+        headers: { Authorization: `Bearer ${this.outstandApiKey}` },
+        params: { tenant_id: userId, network },
+      })
+      const accounts: any[] = response.data?.data || []
+      const match = accounts.find(
+        (a) =>
+          a.network?.toLowerCase() === network.toLowerCase() &&
+          a.username?.toLowerCase() === username.toLowerCase() &&
+          String(a.tenant_id || '') === userId,
+      )
 
-    if (!match) {
-      throw new NotFoundException(`No ${network} account matching "${username}" found on Outstand.`)
+      if (!match) {
+        throw new NotFoundException(`No ${network} account matching "${username}" found on Outstand.`)
+      }
+
+      const result = await this.saveDirectConnection(userId, {
+        outstandAccountId: match.id,
+        networkUniqueId: match.network_unique_id ?? '',
+        username: match.username,
+        platform: network,
+        baselineAccountIds: [],
+      })
+      await this.finishConnectionFinalization(state)
+      return result
     }
 
-    return this.saveDirectConnection(userId, {
-      outstandAccountId: match.id,
-      networkUniqueId: match.network_unique_id ?? '',
-      username: match.username,
-      platform: network,
-    })
+    try {
+      return await lookup()
+    } catch (error) {
+      if (error instanceof NotFoundException) {
+        await new Promise((resolve) => setTimeout(resolve, 2000))
+        try {
+          return await lookup()
+        } catch (retryError) {
+          await this.releaseConnectionFinalization(state)
+          throw retryError
+        }
+      }
+      await this.releaseConnectionFinalization(state)
+      throw error
+    }
   }
 
   // ── Bluesky has no OAuth step — unlike every other platform here, there's
@@ -1242,31 +1459,10 @@ export class AutopostService {
     const { event, data } = payload;
 
     if (event === 'account.connected') {
-      const localUserId = data.state; // Recovering original tracking string passed inside state parameter
-
-      if (!localUserId) return { processed: false, reason: 'No tracking state located' };
-
-      // Use your private helper to map the incoming platform correctly to the exact string Prisma expects
-      const structuralPlatform = this.normalizePlatform(data.platform);
-
-      await this.prisma.socialAccount.upsert({
-        where: { outstandAccountId: data.id },
-        update: {
-          status: 'active',
-          username: data.username,
-          avatarUrl: data.avatarUrl,
-        },
-        create: {
-          userId: localUserId,
-          outstandAccountId: data.id,
-          // Use the normalization helper and cast as any
-          platform: this.normalizePlatform(data.platform) as any, 
-          username: data.username,
-          avatarUrl: data.avatarUrl,
-          status: 'active',
-        },
-      });
-      return { processed: true };
+      // OAuth completion is finalized by the authenticated browser callback.
+      // Outstand replaces custom `state`, so account ownership is verified
+      // there using the server-assigned tenant_id instead.
+      return { processed: false, reason: 'Handled by authenticated callback' };
     }
 
     // Dynamic state updates whenever scheduled posts are completed on target networks
@@ -1576,6 +1772,222 @@ export class AutopostService {
       };
 
     } catch (error) {
+      console.error('CRITICAL SYSTEM PROCESS FAULT INSIDE METRICS PIPELINE:', error.message);
+      throw new InternalServerErrorException('Analytics system pipeline processing execution error.');
+    }
+  }
+
+  async calculateUserDashboardMetricsV2(userId: string, fromQuery?: string, toQuery?: string, platformFilter?: string) {
+    try {
+      const finalFromTimestamp = fromQuery
+        ? this.parseToUnixSeconds(fromQuery, true)
+        : this.parseToUnixSeconds('7d', true);
+      const finalToTimestamp = toQuery
+        ? this.parseToUnixSeconds(toQuery, false)
+        : Math.floor(Date.now() / 1000).toString();
+      const normalizedFilter = platformFilter?.trim().toUpperCase();
+      if (normalizedFilter && !Object.values(SocialPlatform).includes(normalizedFilter as SocialPlatform)) {
+        throw new BadRequestException('Unsupported analytics platform filter.');
+      }
+
+      const connectedChannels: any[] = await this.prisma.$queryRaw`
+        SELECT id, "outstandAccountId", platform, username, "avatarUrl"
+        FROM "SocialAccount" 
+        WHERE "userId" = ${userId} AND status = 'active'
+      `;
+      const filteredChannels = normalizedFilter
+        ? connectedChannels.filter((c) => String(c.platform).toUpperCase() === normalizedFilter)
+        : connectedChannels;
+      const startOfMonth = new Date();
+      startOfMonth.setDate(1);
+      startOfMonth.setHours(0, 0, 0, 0);
+      const postsThisMonthCount = await this.prisma.post.count({
+        where: {
+          userId,
+          status: 'PUBLISHED',
+          createdAt: { gte: startOfMonth },
+          ...(normalizedFilter
+            ? {
+                deliveries: {
+                  some: {
+                    socialAccount: {
+                      platform: normalizedFilter as SocialPlatform,
+                    },
+                  },
+                },
+              }
+            : {}),
+        },
+      });
+      const numberValue = (...values: unknown[]) => {
+        const match = values.find((value) => value !== undefined && value !== null && value !== '');
+        const parsed = Number(match ?? 0);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const accounts: any[] = await Promise.all(filteredChannels.map(async (channel) => {
+        try {
+          const url =
+            `${this.outstandBaseUrl}/social-accounts/${channel.outstandAccountId}/metrics` +
+            `?since=${encodeURIComponent(finalFromTimestamp)}&until=${encodeURIComponent(finalToTimestamp)}`;
+          const response = await axios.get(url, { headers: { Authorization: `Bearer ${this.outstandApiKey}` } });
+          const dataPayload = response.data?.data || response.data?.metrics || response.data || {};
+          const engagement = dataPayload.engagement || {};
+          const platform = String(channel.platform).toUpperCase();
+          const likes = numberValue(engagement.likes);
+          const comments = numberValue(engagement.comments);
+          const shares = numberValue(engagement.shares, engagement.retweets);
+          const saves = numberValue(engagement.saves);
+          const postEngagements = numberValue(engagement.post_engagements);
+          const totalEngagement = numberValue(
+            platform === 'INSTAGRAM' ? engagement.total_interactions : undefined,
+            platform === 'FACEBOOK' ? engagement.post_engagements : undefined,
+            engagement.total_interactions,
+            postEngagements,
+            likes + comments + shares + saves,
+          );
+          const metrics = {
+            followers: numberValue(dataPayload.followers_count, dataPayload.followers),
+            following: numberValue(dataPayload.following_count, dataPayload.following),
+            posts: numberValue(dataPayload.posts_count, dataPayload.posts),
+            views: platform === 'INSTAGRAM'
+              ? numberValue(engagement.views)
+              : numberValue(engagement.views, dataPayload.views),
+            impressions: platform === 'FACEBOOK'
+              ? numberValue(engagement.impressions)
+              : numberValue(engagement.impressions, dataPayload.impressions),
+            reach: numberValue(
+              platform === 'INSTAGRAM' || platform === 'FACEBOOK' ? engagement.reach : undefined,
+              dataPayload.reach,
+            ),
+            totalEngagement,
+            likes,
+            comments,
+            shares,
+            saves,
+            postEngagements,
+          };
+          return {
+            id: channel.id,
+            platform: String(channel.platform),
+            username: channel.username,
+            avatar: channel.avatarUrl,
+            status: 'success',
+            metrics,
+            period: {
+              since: finalFromTimestamp,
+              until: finalToTimestamp,
+            },
+          };
+        } catch (error) {
+          const message = axios.isAxiosError(error)
+            ? String(error.response?.data?.message || error.message)
+            : error instanceof Error ? error.message : 'Unknown Outstand error';
+          console.error(`[Metrics Channel Failure] ${channel.outstandAccountId}: ${message}`);
+          return {
+            id: channel.id,
+            platform: String(channel.platform),
+            username: channel.username,
+            avatar: channel.avatarUrl,
+            status: 'error',
+            error: message,
+            metrics: null,
+            period: { since: finalFromTimestamp, until: finalToTimestamp },
+          };
+        }
+      }));
+
+      const successfulAccounts = accounts.filter((account) => account.status === 'success' && account.metrics);
+      const totals = successfulAccounts.reduce((sum, account) => {
+        Object.keys(sum).forEach((key) => {
+          sum[key] += numberValue(account.metrics?.[key]);
+        });
+        return sum;
+      }, {
+        followers: 0,
+        following: 0,
+        posts: 0,
+        views: 0,
+        impressions: 0,
+        reach: 0,
+        totalEngagement: 0,
+        likes: 0,
+        comments: 0,
+        shares: 0,
+        saves: 0,
+        postEngagements: 0,
+      } as Record<string, number>);
+
+      const platforms: Record<string, any> = {};
+      for (const account of successfulAccounts) {
+        const key = account.platform;
+        const current = platforms[key] || {
+          accountCount: 0,
+          followers: 0,
+          following: 0,
+          posts: 0,
+          views: 0,
+          impressions: 0,
+          reach: 0,
+          totalEngagement: 0,
+          likes: 0,
+          comments: 0,
+          shares: 0,
+          saves: 0,
+          postEngagements: 0,
+        };
+        current.accountCount += 1;
+        Object.keys(account.metrics!).forEach((metric) => {
+          current[metric] = numberValue(current[metric]) + numberValue(account.metrics?.[metric]);
+        });
+        platforms[key] = current;
+      }
+      Object.values(platforms).forEach((platform: any) => {
+        platform.engagementRate = platform.reach > 0
+          ? Math.round((platform.totalEngagement / platform.reach) * 10000) / 100
+          : 0;
+        platform.engagementShare = totals.totalEngagement > 0
+          ? Math.round((platform.totalEngagement / totals.totalEngagement) * 10000) / 100
+          : 0;
+      });
+
+      return {
+        success: true,
+        timeframe: {
+          from_unix: finalFromTimestamp,
+          to_unix: finalToTimestamp,
+          since: new Date(Number(finalFromTimestamp) * 1000).toISOString(),
+          until: new Date(Number(finalToTimestamp) * 1000).toISOString(),
+        },
+        timeseriesAvailable: false,
+        partialData: accounts.some((account) => account.status === 'error'),
+        accounts,
+        platforms,
+        metrics: {
+          totalFollowers: totals.followers,
+          totalFollowing: totals.following,
+          totalPosts: totals.posts,
+          totalViews: totals.views,
+          totalImpressions: totals.impressions,
+          totalReach: totals.reach,
+          totalEngagement: totals.totalEngagement,
+          avgEngagementRate: totals.reach > 0
+            ? Math.round((totals.totalEngagement / totals.reach) * 10000) / 100
+            : 0,
+          postsThisMonth: postsThisMonthCount,
+        },
+        charts: {
+          engagementOverTime: [],
+          reachAndImpressions: [],
+          platformBreakdown: platforms,
+          followerGrowth: [],
+        },
+        message: filteredChannels.length
+          ? undefined
+          : 'No connected social media identities located.',
+      };
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
       console.error('CRITICAL SYSTEM PROCESS FAULT INSIDE METRICS PIPELINE:', error.message);
       throw new InternalServerErrorException('Analytics system pipeline processing execution error.');
     }

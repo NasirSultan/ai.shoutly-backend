@@ -66,7 +66,7 @@ async getUserPlanForAdmin(@Param('userId') userId: string) {
 async updateCalendarPost(
   @Req() req,
   @Param('postId') postId: string,
-  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string, timezone?: string },
+  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | string[] },
   @UploadedFile() file?: Express.Multer.File
 ) {
   const userId = req.user.id
@@ -155,7 +155,7 @@ async publishNow(@Req() req, @Param('postId') postId: string) {
 @UseInterceptors(FileInterceptor('image'))
 async createManualPost(
   @Req() req,
-  @Body() body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string },
+  @Body() body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | string[] },
   @UploadedFile() file?: Express.Multer.File
 ) {
   const userId = req.user.id
@@ -186,7 +186,7 @@ async createManualPost(
 async updateManualPost(
   @Req() req,
   @Param('postId') postId: string,
-  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string },
+  @Body() body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | string[] },
   @UploadedFile() file?: Express.Multer.File
 ) {
   const userId = req.user.id

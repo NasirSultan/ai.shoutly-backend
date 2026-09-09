@@ -300,6 +300,7 @@ model CalendarPost {
   type          PostType
   postTime      DateTime
   status        PostStatus  @default(SCHEDULED)
+  targetPlatforms SocialPlatform[] @default([])
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 

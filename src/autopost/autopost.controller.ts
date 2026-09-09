@@ -45,9 +45,11 @@ export class AutopostController {
       throw new BadRequestException('Missing session token');
     }
 
-    const outstandApiKey =
-      'ost_DFRKRnqHLgDCZGDqYCXywbmkFQOnqNtBHhpyGpnkqFsIFkdCSycGcbkTOECKlnta';
-    const outstandBaseUrl = 'https://api.outstand.so/v1';
+    const outstandApiKey = process.env.OUTSTAND_API_KEY;
+    const outstandBaseUrl = process.env.OUTSTAND_BASE_URL || 'https://api.outstand.so/v1';
+    if (!outstandApiKey) {
+      throw new InternalServerErrorException('OUTSTAND_API_KEY is not configured');
+    }
 
     try {
       const pendingUrl = `${outstandBaseUrl}/social-accounts/pending/${body.sessionToken}`;

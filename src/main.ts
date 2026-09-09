@@ -6,7 +6,7 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule)
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true })
   app.useStaticAssets(path.join(__dirname, '..', 'public'))
   app.setGlobalPrefix('api')
 
