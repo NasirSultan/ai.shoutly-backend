@@ -756,7 +756,26 @@ export class AutopostService {
   // connecting any of them — lets the frontend show a real picker instead
   // of us guessing. Call this first; the user's choice from here is what
   // gets passed to finalizeTwoStepConnection() below.
+  // Outstand may nest pages under data.availablePages (camel) or
+  // available_pages (snake), or at the top level — historically inconsistent.
+  private extractAvailablePages(resBody: any): any[] {
+    const candidates = [
+      resBody?.data?.availablePages,
+      resBody?.data?.available_pages,
+      resBody?.availablePages,
+      resBody?.available_pages,
+      resBody?.data?.pages,
+      resBody?.pages,
+    ];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) return candidate;
+    }
+    return [];
+  }
+
   async getPendingConnection(userId: string, sessionToken: string, state: string) {
+    // Redis ownership is the source of truth for who started this OAuth —
+    // Outstand's Facebook pending response has historically omitted tenant_id.
     const connection = await this.readConnection(state, userId);
     if (connection.platform !== 'facebook') {
       throw new BadRequestException('Connection state platform mismatch.');
@@ -769,10 +788,29 @@ export class AutopostService {
 
     const resBody = await pendingResponse.json();
     const returnedTenant = resBody?.data?.tenant_id ?? resBody?.tenant_id;
-    if (!returnedTenant || returnedTenant !== userId) {
+    const hasTenant = returnedTenant != null && String(returnedTenant).length > 0;
+    const tenantMatches = hasTenant ? String(returnedTenant) === userId : null;
+    // Only reject when Outstand *does* return a tenant that disagrees.
+    // Missing tenant is OK — readConnection already bound this user via Redis.
+    if (hasTenant && !tenantMatches) {
       throw new BadRequestException('Outstand session tenant did not match the initiating user.');
     }
-    const availablePages = resBody?.data?.availablePages || [];
+    const availablePages = this.extractAvailablePages(resBody);
+    const topLevelKeys =
+      resBody && typeof resBody === 'object' && !Array.isArray(resBody)
+        ? Object.keys(resBody)
+        : [];
+    const dataKeys =
+      resBody?.data && typeof resBody.data === 'object' && !Array.isArray(resBody.data)
+        ? Object.keys(resBody.data)
+        : [];
+    console.log('[getPendingConnection]', {
+      hasTenant,
+      tenantMatches,
+      availablePagesCount: availablePages.length,
+      topLevelKeys,
+      dataKeys,
+    });
     if (availablePages.length === 0) throw new BadRequestException('No authorized Facebook pages found for this session.');
     await this.redisService.getClient().set(
       this.sessionKey(sessionToken),
