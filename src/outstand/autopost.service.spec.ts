@@ -189,4 +189,62 @@ describe('AutopostService ownership and analytics', () => {
       total: 1,
     });
   });
+
+  describe('getPendingConnection tenant handling', () => {
+    const userId = 'user-a';
+    const state = 'state-fb-1';
+    const sessionToken = 'session-token-1';
+    const pages = [{ id: 'page-1', name: 'Page One' }];
+
+    function seedFacebookConnection(ownerId = userId) {
+      redis.values.set(
+        'outstand:connection:state-fb-1',
+        JSON.stringify({
+          userId: ownerId,
+          platform: 'facebook',
+          redirectUri: 'https://shoutlyai.com/dashboards/settings/accounts',
+          baselineAccountIds: [],
+        }),
+      );
+    }
+
+    function mockPendingFetch(body: Record<string, unknown>) {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => body,
+      });
+      (global as any).fetch = fetchMock;
+      return fetchMock;
+    }
+
+    it('succeeds when pending omits tenant_id and Redis state belongs to the user', async () => {
+      seedFacebookConnection();
+      mockPendingFetch({ data: { available_pages: pages } });
+
+      const result = await service.getPendingConnection(userId, sessionToken, state);
+
+      expect(result).toEqual({ success: true, availablePages: pages });
+      expect(redis.client.set).toHaveBeenCalled();
+    });
+
+    it('rejects when pending returns a tenant_id for a different user', async () => {
+      seedFacebookConnection();
+      mockPendingFetch({
+        data: { tenant_id: 'other-user', availablePages: pages },
+      });
+
+      await expect(
+        service.getPendingConnection(userId, sessionToken, state),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('still rejects Redis state owned by another user (cross-user check intact)', async () => {
+      seedFacebookConnection('user-b');
+      mockPendingFetch({ data: { availablePages: pages } });
+
+      await expect(
+        service.getPendingConnection(userId, sessionToken, state),
+      ).rejects.toThrow('Connection state does not belong to this user.');
+    });
+  });
 });
