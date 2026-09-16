@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import { Cron } from '@nestjs/schedule'
+import { Cron, CronExpression } from '@nestjs/schedule'
 import { DateTime } from 'luxon'
 import { prisma } from '../lib/prisma'
 import { BrevoService } from '../brevo/brevo.service'
@@ -22,9 +22,13 @@ const MAX_DAYS = Math.max(...DRIP_STEPS.map((s) => s.days))
 export class OnboardingDripService {
   constructor(private readonly brevoService: BrevoService) {}
 
-  // Runs once a day; catches up on any step whose day-count has passed and
-  // that hasn't been sent yet, so a missed run never skips a step.
-  @Cron('0 9 * * *')
+  // Runs every 5 minutes instead of once a day — matches checkDuePosts's
+  // proven-reliable frequency on Render's free tier, where a single fixed
+  // daily time can be missed entirely if the app happens to be asleep at
+  // that exact moment. Safe to run this often: each pass only sends a step
+  // that's both due AND not already in sentOnboardingSteps, so catching up
+  // late is fine but nothing ever fires twice for the same user/step.
+  @Cron(CronExpression.EVERY_5_MINUTES)
   async sendDueDripEmails() {
     const now = DateTime.now()
     const windowStart = now.minus({ days: MAX_DAYS + 1 }).toJSDate()
