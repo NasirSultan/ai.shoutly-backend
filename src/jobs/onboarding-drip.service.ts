@@ -22,13 +22,14 @@ const MAX_DAYS = Math.max(...DRIP_STEPS.map((s) => s.days))
 export class OnboardingDripService {
   constructor(private readonly brevoService: BrevoService) {}
 
-  // Runs every 5 minutes instead of once a day — matches checkDuePosts's
-  // proven-reliable frequency on Render's free tier, where a single fixed
-  // daily time can be missed entirely if the app happens to be asleep at
-  // that exact moment. Safe to run this often: each pass only sends a step
-  // that's both due AND not already in sentOnboardingSteps, so catching up
-  // late is fine but nothing ever fires twice for the same user/step.
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  // Runs every minute — same schedule as JobsService.checkDuePosts, so both
+  // jobs share the same proven-reliable frequency on Render's free tier
+  // instead of a single fixed daily time that's easy to miss entirely if
+  // the app happens to be asleep at that exact moment. Safe to run this
+  // often: each pass only sends a step that's both due AND not already in
+  // sentOnboardingSteps, so catching up late is fine but nothing ever
+  // fires twice for the same user/step.
+  @Cron(CronExpression.EVERY_MINUTE)
   async sendDueDripEmails() {
     const now = DateTime.now()
     const windowStart = now.minus({ days: MAX_DAYS + 1 }).toJSDate()
