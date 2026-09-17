@@ -98,11 +98,22 @@ const CHAT_MODEL = 'deepseek-chat'
 interface ChatTurn {
   query: string
   answer: string
+  embedding: number[]
 }
 
 const MAX_TURNS = 3
 const SESSION_TTL_SECONDS = 30 * 60
-const MAX_STORED_ANSWER_CHARS = 250
+// Turns are stored with the full, untruncated answer — a later turn in the
+// same session may need to replay it verbatim on a repeat-question hit.
+// Only when building the LLM prompt's history block do older answers get
+// clipped to this length, to keep prompt size bounded.
+const MAX_HISTORY_PROMPT_CHARS = 250
+
+function truncateForPrompt(answer: string): string {
+  return answer.length > MAX_HISTORY_PROMPT_CHARS
+    ? answer.slice(0, MAX_HISTORY_PROMPT_CHARS) + '…'
+    : answer
+}
 
 class ConversationMemory {
   constructor(private readonly redis: RedisService) {}
@@ -123,20 +134,13 @@ class ConversationMemory {
     sessionId: string | undefined,
     query: string,
     answer: string,
+    embedding: number[],
   ): Promise<void> {
     if (!sessionId) return
 
     const turns = await this.getHistory(sessionId)
 
-    const storedAnswer =
-      answer.length > MAX_STORED_ANSWER_CHARS
-        ? answer.slice(0, MAX_STORED_ANSWER_CHARS) + '…'
-        : answer
-
-    turns.push({
-      query,
-      answer: storedAnswer,
-    })
+    turns.push({ query, answer, embedding })
 
     if (turns.length > MAX_TURNS) {
       turns.shift()
@@ -178,6 +182,34 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
 
   return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+// Checks THIS session's own recent turns (not the cross-session cache) for
+// a near-duplicate of the current question. Safe to apply on any turn,
+// unlike the cross-session cache: we're only ever replaying an answer this
+// same session already gave, so there's no risk of ignoring context a
+// genuine follow-up would need — if the earlier answer was right without
+// later context, it's still right now.
+function findRepeatInHistory(
+  history: ChatTurn[],
+  embedding: number[],
+): string | null {
+  let best: { answer: string; similarity: number } | null = null
+
+  for (const turn of history) {
+    if (!turn.embedding) continue
+
+    const similarity = cosineSimilarity(embedding, turn.embedding)
+
+    if (
+      similarity >= CACHE_SIMILARITY_THRESHOLD &&
+      (!best || similarity > best.similarity)
+    ) {
+      best = { answer: turn.answer, similarity }
+    }
+  }
+
+  return best?.answer ?? null
 }
 
 // Reuses the existing Redis instance (no separate managed cache service) to
@@ -662,7 +694,7 @@ Return JSON only:
         })
 
         this.conversationMemory
-          .addTurn(dto.sessionId, dto.query, cachedAnswer)
+          .addTurn(dto.sessionId, dto.query, cachedAnswer, queryEmbedding)
           .catch((err) =>
             this.logger.warn(
               `[chat] failed to save session history: ${err.message}`,
@@ -679,9 +711,42 @@ Return JSON only:
         }
       }
     } else {
+      const repeatSpan = startObservation('session-repeat-lookup', {
+        input: rewrittenQuery,
+      })
+
+      const repeatAnswer = findRepeatInHistory(history, queryEmbedding)
+
+      repeatSpan.update({ output: { hit: repeatAnswer !== null } })
+      repeatSpan.end()
+
       this.logger.log(
-        `[chat] semantic cache: SKIPPED (not first turn — ${history.length} prior turn(s) in session)`,
+        `[chat] session repeat: ${repeatAnswer ? 'HIT' : 'MISS'} (${history.length} prior turn(s) in session)`,
       )
+
+      if (repeatAnswer) {
+        rootSpan.update({
+          output: repeatAnswer,
+          metadata: { sessionRepeatHit: true },
+        })
+
+        this.conversationMemory
+          .addTurn(dto.sessionId, dto.query, repeatAnswer, queryEmbedding)
+          .catch((err) =>
+            this.logger.warn(
+              `[chat] failed to save session history: ${err.message}`,
+            ),
+          )
+
+        return {
+          success: true,
+          query: dto.query,
+          answer: repeatAnswer,
+          confidence: 'high',
+          retrievedAt: new Date().toISOString(),
+          cta: null,
+        }
+      }
     }
 
     const searchSpan = startObservation(
@@ -729,7 +794,7 @@ Return JSON only:
         ? `Previous conversation (most recent last):\n${history
             .map(
               (t) =>
-                `User: ${t.query}\nAssistant: ${t.answer}`,
+                `User: ${t.query}\nAssistant: ${truncateForPrompt(t.answer)}`,
             )
             .join('\n')}\n\n`
         : ''
@@ -835,6 +900,7 @@ JSON only:
           dto.sessionId,
           dto.query,
           parsed.answer,
+          queryEmbedding,
         )
         .catch((err) =>
           this.logger.warn(
@@ -943,7 +1009,7 @@ JSON only:
         trace.end()
 
         this.conversationMemory
-          .addTurn(dto.sessionId, dto.query, cachedAnswer)
+          .addTurn(dto.sessionId, dto.query, cachedAnswer, queryEmbedding)
           .catch((err) =>
             this.logger.warn(
               `[streamChat] failed to save session history: ${err.message}`,
@@ -961,9 +1027,44 @@ JSON only:
         return
       }
     } else {
+      const repeatSpan = trace.startObservation('session-repeat-lookup', {
+        input: rewrittenQuery,
+      })
+
+      const repeatAnswer = findRepeatInHistory(history, queryEmbedding)
+
+      repeatSpan.update({ output: { hit: repeatAnswer !== null } })
+      repeatSpan.end()
+
       this.logger.log(
-        `[streamChat] semantic cache: SKIPPED (not first turn — ${history.length} prior turn(s) in session)`,
+        `[streamChat] session repeat: ${repeatAnswer ? 'HIT' : 'MISS'} (${history.length} prior turn(s) in session)`,
       )
+
+      if (repeatAnswer) {
+        trace.update({
+          output: repeatAnswer,
+          metadata: { sessionRepeatHit: true },
+        })
+        trace.end()
+
+        this.conversationMemory
+          .addTurn(dto.sessionId, dto.query, repeatAnswer, queryEmbedding)
+          .catch((err) =>
+            this.logger.warn(
+              `[streamChat] failed to save session history: ${err.message}`,
+            ),
+          )
+
+        yield `data: ${JSON.stringify({ text: repeatAnswer })}\n\n`
+
+        yield `data: ${JSON.stringify({
+          meta: { cta: null },
+        })}\n\n`
+
+        yield `data: [DONE]\n\n`
+
+        return
+      }
     }
 
     const searchSpan = trace.startObservation(
@@ -1011,7 +1112,7 @@ JSON only:
         ? `Previous conversation (most recent last):\n${history
             .map(
               (t) =>
-                `User: ${t.query}\nAssistant: ${t.answer}`,
+                `User: ${t.query}\nAssistant: ${truncateForPrompt(t.answer)}`,
             )
             .join('\n')}\n\n`
         : ''
@@ -1123,6 +1224,7 @@ Rules:
         dto.sessionId,
         dto.query,
         fullAnswer,
+        queryEmbedding,
       )
       .catch((err) =>
         this.logger.warn(
