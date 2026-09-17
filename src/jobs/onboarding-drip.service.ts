@@ -5,7 +5,13 @@ import { prisma } from '../lib/prisma'
 import { BrevoService } from '../brevo/brevo.service'
 
 // Onboarding drip sequence: step 1 (welcome) fires immediately from
-// auth.service.ts#updateProfile, which also stamps onboardingStartedAt.
+// auth.service.ts#updateProfile. That same function is also supposed to
+// stamp onboardingStartedAt, but in production that stamp was never
+// landing (still 0/82 users weeks after the fix shipped) — so as a
+// second, self-sufficient path, this job also starts the clock itself
+// for anyone whose profile is clearly complete (brandName set) but whose
+// clock never started. That way the drip doesn't depend on exactly which
+// request handler saved the profile.
 // Steps 2-7 below fire that many days after onboardingStartedAt.
 const DRIP_STEPS: { step: number; days: number }[] = [
   { step: 2, days: 1 },
@@ -31,6 +37,8 @@ export class OnboardingDripService {
   // fires twice for the same user/step.
   @Cron(CronExpression.EVERY_MINUTE)
   async sendDueDripEmails() {
+    await this.startClockForCompletedProfiles()
+
     const now = DateTime.now()
     const windowStart = now.minus({ days: MAX_DAYS + 1 }).toJSDate()
     const windowEnd = now.minus({ days: DRIP_STEPS[0].days }).toJSDate()
@@ -77,6 +85,20 @@ export class OnboardingDripService {
 
     if (sentCount > 0) {
       console.log(`[OnboardingDrip] Sent ${sentCount} drip email(s)`)
+    }
+  }
+
+  // Anyone with a saved brand name has clearly finished the profile step,
+  // regardless of which endpoint they went through. If their clock never
+  // started, start it now so steps 2-7 aren't stuck forever.
+  private async startClockForCompletedProfiles() {
+    const { count } = await prisma.user.updateMany({
+      where: { brandName: { not: null }, onboardingStartedAt: null },
+      data: { onboardingStartedAt: new Date() },
+    })
+
+    if (count > 0) {
+      console.log(`[OnboardingDrip] Started onboarding clock for ${count} user(s) with a completed profile`)
     }
   }
 }
