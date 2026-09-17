@@ -651,13 +651,15 @@ Return JSON only:
       cacheSpan.update({ output: { hit: cachedAnswer !== null } })
       cacheSpan.end()
 
+      this.logger.log(
+        `[chat] semantic cache: ${cachedAnswer ? 'HIT' : 'MISS'}`,
+      )
+
       if (cachedAnswer) {
         rootSpan.update({
           output: cachedAnswer,
           metadata: { cacheHit: true },
         })
-
-        this.logger.log('[chat] served from semantic cache')
 
         this.conversationMemory
           .addTurn(dto.sessionId, dto.query, cachedAnswer)
@@ -676,6 +678,10 @@ Return JSON only:
           cta: null,
         }
       }
+    } else {
+      this.logger.log(
+        `[chat] semantic cache: SKIPPED (not first turn — ${history.length} prior turn(s) in session)`,
+      )
     }
 
     const searchSpan = startObservation(
@@ -925,14 +931,16 @@ JSON only:
       cacheSpan.update({ output: { hit: cachedAnswer !== null } })
       cacheSpan.end()
 
+      this.logger.log(
+        `[streamChat] semantic cache: ${cachedAnswer ? 'HIT' : 'MISS'}`,
+      )
+
       if (cachedAnswer) {
         trace.update({
           output: cachedAnswer,
           metadata: { cacheHit: true },
         })
         trace.end()
-
-        this.logger.log('[streamChat] served from semantic cache')
 
         this.conversationMemory
           .addTurn(dto.sessionId, dto.query, cachedAnswer)
@@ -952,6 +960,10 @@ JSON only:
 
         return
       }
+    } else {
+      this.logger.log(
+        `[streamChat] semantic cache: SKIPPED (not first turn — ${history.length} prior turn(s) in session)`,
+      )
     }
 
     const searchSpan = trace.startObservation(
