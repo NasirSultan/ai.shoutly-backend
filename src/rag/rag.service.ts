@@ -13,6 +13,7 @@ import { ChatQueryDto } from './dto/chat-query.dto'
 import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 import { Cta } from './chatbot-flow.config'
 import { RedisService } from '../common/redis/redis.service'
+import { randomUUID } from 'crypto'
 import {
   startObservation,
   startActiveObservation,
@@ -149,10 +150,127 @@ class ConversationMemory {
   }
 }
 
+const CACHE_KEY_PREFIX = 'rag:semcache:'
+const CACHE_INDEX_KEY = 'rag:semcache:index'
+const CACHE_TTL_SECONDS = 24 * 60 * 60
+const CACHE_MAX_ENTRIES = 20
+// Calibrated against real text-embedding-3-small output: genuine paraphrases
+// of the same question land around 0.82-0.90, while distinct-but-related
+// questions (e.g. "what plans does it offer?" vs "what is ShoutlyAI?") stay
+// near 0.71. 0.85 sits in between with room on both sides.
+const CACHE_SIMILARITY_THRESHOLD = 0.85
+
+interface SemanticCacheEntry {
+  response: string
+  embedding: number[]
+  language: string
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  let dot = 0
+  let normA = 0
+  let normB = 0
+
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+// Reuses the existing Redis instance (no separate managed cache service) to
+// cache first-turn RAG answers by embedding similarity. CACHE_INDEX_KEY is a
+// sorted set (member = entry key, score = insertion time) that both orders
+// entries oldest-first for capacity trimming and gives search() a bounded
+// list to compare against — no SCAN, no vector index needed.
+class SemanticCache {
+  constructor(private readonly redis: RedisService) {}
+
+  async search(
+    embedding: number[],
+    language: string,
+  ): Promise<string | null> {
+    const client = this.redis.getClient()
+
+    const keys = await client.zRange(CACHE_INDEX_KEY, 0, -1)
+
+    if (keys.length === 0) return null
+
+    const values = await client.mGet(keys)
+
+    let best: { response: string; similarity: number } | null = null
+    const expiredKeys: string[] = []
+
+    for (let i = 0; i < keys.length; i++) {
+      const raw = values[i]
+
+      if (!raw) {
+        // TTL already reclaimed the entry — drop its stale index reference.
+        expiredKeys.push(keys[i])
+        continue
+      }
+
+      const entry: SemanticCacheEntry = JSON.parse(raw)
+
+      if (entry.language !== language) continue
+
+      const similarity = cosineSimilarity(embedding, entry.embedding)
+
+      if (
+        similarity >= CACHE_SIMILARITY_THRESHOLD &&
+        (!best || similarity > best.similarity)
+      ) {
+        best = { response: entry.response, similarity }
+      }
+    }
+
+    if (expiredKeys.length > 0) {
+      client.zRem(CACHE_INDEX_KEY, expiredKeys).catch(() => undefined)
+    }
+
+    return best?.response ?? null
+  }
+
+  set(response: string, embedding: number[], language: string): void {
+    const entry: SemanticCacheEntry = { response, embedding, language }
+    const key = `${CACHE_KEY_PREFIX}${randomUUID()}`
+    const client = this.redis.getClient()
+
+    client
+      .set(key, JSON.stringify(entry), { EX: CACHE_TTL_SECONDS })
+      .then(() =>
+        client.zAdd(CACHE_INDEX_KEY, { value: key, score: Date.now() }),
+      )
+      .then(() => this.trimToMaxEntries(client))
+      .catch(() => undefined)
+  }
+
+  private async trimToMaxEntries(
+    client: ReturnType<RedisService['getClient']>,
+  ): Promise<void> {
+    const count = await client.zCard(CACHE_INDEX_KEY)
+    const excess = count - CACHE_MAX_ENTRIES
+
+    if (excess <= 0) return
+
+    const oldestKeys = await client.zRange(CACHE_INDEX_KEY, 0, excess - 1)
+
+    if (oldestKeys.length === 0) return
+
+    await Promise.all([
+      client.del(oldestKeys),
+      client.zRem(CACHE_INDEX_KEY, oldestKeys),
+    ])
+  }
+}
+
 @Injectable()
 export class RagService {
   private readonly logger = new Logger(RagService.name)
   private readonly conversationMemory: ConversationMemory
+  private readonly semanticCache: SemanticCache
 
   constructor(
     private readonly prisma: PrismaService,
@@ -160,6 +278,7 @@ export class RagService {
     private readonly redis: RedisService,
   ) {
     this.conversationMemory = new ConversationMemory(this.redis)
+    this.semanticCache = new SemanticCache(this.redis)
   }
 
   async embedText(
@@ -406,12 +525,13 @@ Return JSON only:
     query: string,
     topK = 5,
     excludeCategories: string[] = [],
+    precomputedEmbedding?: number[],
   ): Promise<RagDocumentWithScore[]> {
     const embeddingStart = Date.now()
 
-    const embedding = await this.embedText(
-      this.normalizeQuery(query),
-    )
+    const embedding =
+      precomputedEmbedding ??
+      (await this.embedText(this.normalizeQuery(query)))
 
     this.logger.log(
       `[searchSimilar] OpenAI embedding took ${
@@ -501,6 +621,63 @@ Return JSON only:
       `[chat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`,
     )
 
+    // Only consult the semantic cache on a fresh session: a cached answer
+    // was generated without conversation history, so serving it to a
+    // follow-up turn (which may depend on prior context) would be wrong.
+    const isFirstTurn = history.length === 0
+
+    const embedSpan = startObservation(
+      'embed-query',
+      { input: rewrittenQuery },
+      { asType: 'embedding' },
+    )
+
+    const queryEmbedding = await this.embedText(
+      this.normalizeQuery(rewrittenQuery),
+    )
+
+    embedSpan.end()
+
+    if (isFirstTurn) {
+      const cacheSpan = startObservation('semantic-cache-lookup', {
+        input: rewrittenQuery,
+      })
+
+      const cachedAnswer = await this.semanticCache.search(
+        queryEmbedding,
+        language,
+      )
+
+      cacheSpan.update({ output: { hit: cachedAnswer !== null } })
+      cacheSpan.end()
+
+      if (cachedAnswer) {
+        rootSpan.update({
+          output: cachedAnswer,
+          metadata: { cacheHit: true },
+        })
+
+        this.logger.log('[chat] served from semantic cache')
+
+        this.conversationMemory
+          .addTurn(dto.sessionId, dto.query, cachedAnswer)
+          .catch((err) =>
+            this.logger.warn(
+              `[chat] failed to save session history: ${err.message}`,
+            ),
+          )
+
+        return {
+          success: true,
+          query: dto.query,
+          answer: cachedAnswer,
+          confidence: 'high',
+          retrievedAt: new Date().toISOString(),
+          cta: null,
+        }
+      }
+    }
+
     const searchSpan = startObservation(
       'vector-search',
       { input: rewrittenQuery },
@@ -511,6 +688,7 @@ Return JSON only:
       rewrittenQuery,
       topK,
       ['greeting'],
+      queryEmbedding,
     )
 
     searchSpan.update({
@@ -639,6 +817,13 @@ JSON only:
         `[chat] final answer (confidence: ${parsed.confidence}): "${parsed.answer}"`,
       )
 
+      // Only cache confident, first-turn answers — a "low" confidence reply
+      // is often a fallback/uncertain answer we don't want replayed to
+      // future similar queries.
+      if (isFirstTurn && parsed.confidence !== 'low') {
+        this.semanticCache.set(parsed.answer, queryEmbedding, language)
+      }
+
       this.conversationMemory
         .addTurn(
           dto.sessionId,
@@ -713,6 +898,62 @@ JSON only:
       `[streamChat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`,
     )
 
+    const isFirstTurn = history.length === 0
+
+    const embedSpan = trace.startObservation(
+      'embed-query',
+      { input: rewrittenQuery },
+      { asType: 'embedding' },
+    )
+
+    const queryEmbedding = await this.embedText(
+      this.normalizeQuery(rewrittenQuery),
+    )
+
+    embedSpan.end()
+
+    if (isFirstTurn) {
+      const cacheSpan = trace.startObservation('semantic-cache-lookup', {
+        input: rewrittenQuery,
+      })
+
+      const cachedAnswer = await this.semanticCache.search(
+        queryEmbedding,
+        language,
+      )
+
+      cacheSpan.update({ output: { hit: cachedAnswer !== null } })
+      cacheSpan.end()
+
+      if (cachedAnswer) {
+        trace.update({
+          output: cachedAnswer,
+          metadata: { cacheHit: true },
+        })
+        trace.end()
+
+        this.logger.log('[streamChat] served from semantic cache')
+
+        this.conversationMemory
+          .addTurn(dto.sessionId, dto.query, cachedAnswer)
+          .catch((err) =>
+            this.logger.warn(
+              `[streamChat] failed to save session history: ${err.message}`,
+            ),
+          )
+
+        yield `data: ${JSON.stringify({ text: cachedAnswer })}\n\n`
+
+        yield `data: ${JSON.stringify({
+          meta: { cta: null },
+        })}\n\n`
+
+        yield `data: [DONE]\n\n`
+
+        return
+      }
+    }
+
     const searchSpan = trace.startObservation(
       'vector-search',
       { input: rewrittenQuery },
@@ -723,6 +964,7 @@ JSON only:
       rewrittenQuery,
       dto.topK ?? 5,
       ['greeting'],
+      queryEmbedding,
     )
 
     searchSpan.update({
@@ -855,6 +1097,10 @@ Rules:
 
     trace.update({ output: fullAnswer })
     trace.end()
+
+    if (isFirstTurn && fullAnswer.trim()) {
+      this.semanticCache.set(fullAnswer, queryEmbedding, language)
+    }
 
     this.logger.log(
       `[streamChat] final answer: "${fullAnswer}"`,
