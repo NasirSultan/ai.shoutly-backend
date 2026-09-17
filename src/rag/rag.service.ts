@@ -13,6 +13,12 @@ import { ChatQueryDto } from './dto/chat-query.dto'
 import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 import { Cta } from './chatbot-flow.config'
 import { RedisService } from '../common/redis/redis.service'
+import {
+  startObservation,
+  startActiveObservation,
+  propagateAttributes,
+  LangfuseSpan,
+} from '@langfuse/tracing'
 
 export interface AiUsageContext {
   userId?: string | null
@@ -458,11 +464,29 @@ Return JSON only:
   }
 
   async chat(dto: ChatQueryDto): Promise<ChatResponse> {
+    return startActiveObservation('rag-chat', (rootSpan) =>
+      propagateAttributes(
+        { sessionId: dto.sessionId },
+        () => this.runChat(dto, rootSpan),
+      ),
+    )
+  }
+
+  private async runChat(
+    dto: ChatQueryDto,
+    rootSpan: LangfuseSpan,
+  ): Promise<ChatResponse> {
     const topK = dto.topK ?? 5
+
+    rootSpan.update({ input: dto.query })
 
     this.logger.log(
       `[chat] query received: "${dto.query}"`,
     )
+
+    const resolveSpan = startObservation('resolve-query', {
+      input: dto.query,
+    })
 
     const [{ language, rewrittenQuery }, history] =
       await Promise.all([
@@ -470,8 +494,17 @@ Return JSON only:
         this.conversationMemory.getHistory(dto.sessionId),
       ])
 
+    resolveSpan.update({ output: { language, rewrittenQuery } })
+    resolveSpan.end()
+
     this.logger.log(
       `[chat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`,
+    )
+
+    const searchSpan = startObservation(
+      'vector-search',
+      { input: rewrittenQuery },
+      { asType: 'retriever' },
     )
 
     const sources = await this.searchSimilar(
@@ -479,6 +512,14 @@ Return JSON only:
       topK,
       ['greeting'],
     )
+
+    searchSpan.update({
+      output: sources.map((s) => ({
+        title: s.title,
+        similarity: s.similarity,
+      })),
+    })
+    searchSpan.end()
 
     this.logger.log(
       `[chat] retrieved ${sources.length} chunk(s): ` +
@@ -535,6 +576,12 @@ Rules:
 JSON only:
 {"answer":"<in ${language}>","confidence":"high|medium|low","contextUsed":<true|false>}`
 
+    const generation = startObservation(
+      'generate-answer',
+      { model: CHAT_MODEL, input: prompt },
+      { asType: 'generation' },
+    )
+
     try {
       const completion = await deepseek.chat.completions.create({
         model: CHAT_MODEL,
@@ -571,6 +618,23 @@ JSON only:
         contextUsed: boolean
       } = JSON.parse(jsonMatch[0])
 
+      generation.update({
+        output: parsed.answer,
+        usageDetails: {
+          promptTokens: completion.usage?.prompt_tokens ?? 0,
+          completionTokens: completion.usage?.completion_tokens ?? 0,
+        },
+      })
+      generation.end()
+
+      rootSpan.update({
+        output: parsed.answer,
+        metadata: {
+          confidence: parsed.confidence,
+          contextUsed: parsed.contextUsed,
+        },
+      })
+
       this.logger.log(
         `[chat] final answer (confidence: ${parsed.confidence}): "${parsed.answer}"`,
       )
@@ -596,6 +660,17 @@ JSON only:
         cta: resolveCta(sources),
       }
     } catch (error: any) {
+      generation.update({
+        level: 'ERROR',
+        statusMessage: error.message,
+      })
+      generation.end()
+
+      rootSpan.update({
+        level: 'ERROR',
+        statusMessage: error.message,
+      })
+
       this.logger.error(
         `[chat] chat generation failed: ${error.message}`,
       )
@@ -609,9 +684,21 @@ JSON only:
   async *streamChat(
     dto: ChatQueryDto,
   ): AsyncGenerator<string> {
+    // Plain (non-active) observations: an async generator's `yield` can't be
+    // threaded through startActiveObservation's callback-scoped context, so
+    // spans here are created and `.end()`-ed explicitly instead.
+    const trace = startObservation('rag-chat-stream', {
+      input: dto.query,
+      metadata: { sessionId: dto.sessionId ?? null },
+    })
+
     this.logger.log(
       `[streamChat] query received: "${dto.query}"`,
     )
+
+    const resolveSpan = trace.startObservation('resolve-query', {
+      input: dto.query,
+    })
 
     const [{ language, rewrittenQuery }, history] =
       await Promise.all([
@@ -619,8 +706,17 @@ JSON only:
         this.conversationMemory.getHistory(dto.sessionId),
       ])
 
+    resolveSpan.update({ output: { language, rewrittenQuery } })
+    resolveSpan.end()
+
     this.logger.log(
       `[streamChat] rewritten query: "${rewrittenQuery}" (detected language: ${language})`,
+    )
+
+    const searchSpan = trace.startObservation(
+      'vector-search',
+      { input: rewrittenQuery },
+      { asType: 'retriever' },
     )
 
     const sources = await this.searchSimilar(
@@ -628,6 +724,14 @@ JSON only:
       dto.topK ?? 5,
       ['greeting'],
     )
+
+    searchSpan.update({
+      output: sources.map((s) => ({
+        title: s.title,
+        similarity: s.similarity,
+      })),
+    })
+    searchSpan.end()
 
     const top2 = sources.slice(0, 2)
 
@@ -678,6 +782,12 @@ Rules:
   - Yes, reference lacks it → name the missing topic, then tell them to email ${SUPPORT_EMAIL}.
   - No → say you don't have that info. No email.`
 
+    const generation = trace.startObservation(
+      'generate-answer',
+      { model: CHAT_MODEL, input: prompt },
+      { asType: 'generation' },
+    )
+
     const stream =
       await deepseek.chat.completions.create({
         model: CHAT_MODEL,
@@ -691,35 +801,60 @@ Rules:
       })
 
     let fullAnswer = ''
+    let promptTokens = 0
+    let completionTokens = 0
 
-    for await (const chunk of stream) {
-      const text =
-        chunk.choices[0]?.delta?.content ?? ''
+    try {
+      for await (const chunk of stream) {
+        const text =
+          chunk.choices[0]?.delta?.content ?? ''
 
-      if (text) {
-        fullAnswer += text
+        if (text) {
+          fullAnswer += text
 
-        yield `data: ${JSON.stringify({
-          text,
-        })}\n\n`
+          yield `data: ${JSON.stringify({
+            text,
+          })}\n\n`
+        }
+
+        if (chunk.usage) {
+          promptTokens = chunk.usage.prompt_tokens ?? 0
+          completionTokens = chunk.usage.completion_tokens ?? 0
+
+          this.aiUsageLogService.logText({
+            userId: null,
+            provider: 'DEEPSEEK',
+            model: CHAT_MODEL,
+            operation: 'CHAT',
+            promptTokens,
+            completionTokens,
+            metadata: {
+              step: 'chat_stream',
+            },
+          })
+        }
       }
+    } catch (error: any) {
+      generation.update({
+        level: 'ERROR',
+        statusMessage: error.message,
+      })
+      generation.end()
 
-      if (chunk.usage) {
-        this.aiUsageLogService.logText({
-          userId: null,
-          provider: 'DEEPSEEK',
-          model: CHAT_MODEL,
-          operation: 'CHAT',
-          promptTokens:
-            chunk.usage.prompt_tokens ?? 0,
-          completionTokens:
-            chunk.usage.completion_tokens ?? 0,
-          metadata: {
-            step: 'chat_stream',
-          },
-        })
-      }
+      trace.update({ level: 'ERROR', statusMessage: error.message })
+      trace.end()
+
+      throw error
     }
+
+    generation.update({
+      output: fullAnswer,
+      usageDetails: { promptTokens, completionTokens },
+    })
+    generation.end()
+
+    trace.update({ output: fullAnswer })
+    trace.end()
 
     this.logger.log(
       `[streamChat] final answer: "${fullAnswer}"`,

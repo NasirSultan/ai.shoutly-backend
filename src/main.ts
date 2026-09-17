@@ -1,8 +1,10 @@
+import './instrumentation'
 import { NestFactory } from '@nestjs/core'
 import { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import * as path from 'path'
 import dotenv from 'dotenv'
+import { langfuseSpanProcessor } from './instrumentation'
 dotenv.config()
 
 async function bootstrap() {
@@ -24,6 +26,14 @@ async function bootstrap() {
 
   console.log(`Server is running on port ${port}`)
   console.log(`Health check available at http://localhost:${port}/health`)
+
+  const flushLangfuseAndExit = async () => {
+    await langfuseSpanProcessor.forceFlush().catch(() => undefined)
+    process.exit(0)
+  }
+
+  process.on('SIGTERM', flushLangfuseAndExit)
+  process.on('SIGINT', flushLangfuseAndExit)
 }
 
 bootstrap()

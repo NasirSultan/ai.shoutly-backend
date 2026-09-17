@@ -24,6 +24,8 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1001.0",
     "@google/genai": "^1.46.0",
+    "@langfuse/otel": "^5.11.1",
+    "@langfuse/tracing": "^5.11.1",
     "@nestjs/common": "^10.0.0",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^10.0.0",
@@ -31,6 +33,7 @@
     "@nestjs/mapped-types": "^2.1.0",
     "@nestjs/platform-express": "^10.0.0",
     "@nestjs/schedule": "^6.1.1",
+    "@opentelemetry/sdk-node": "^0.222.0",
     "@prisma/client": "^6.15.0",
     "@sendinblue/client": "^3.3.1",
     "axios": "^1.16.1",
