@@ -95,6 +95,35 @@ const deepseek = new OpenAI({
 
 const CHAT_MODEL = 'deepseek-chat'
 
+// Retry policy for direct OpenAI/DeepSeek calls: 2 retries (3 attempts
+// total), waiting 2s then 4s between attempts. Skips retrying errors that
+// won't succeed on a second try (bad request, auth, not-found) — only
+// retries rate limits, server errors, and connection failures.
+const RETRY_BACKOFF_MS = [2000, 4000]
+
+function isRetryableApiError(error: any): boolean {
+  const status = error?.status ?? error?.response?.status
+
+  return status === undefined || status === 429 || status >= 500
+}
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn()
+    } catch (error: any) {
+      const canRetry =
+        attempt < RETRY_BACKOFF_MS.length && isRetryableApiError(error)
+
+      if (!canRetry) throw error
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_BACKOFF_MS[attempt]),
+      )
+    }
+  }
+}
+
 interface ChatTurn {
   query: string
   answer: string
@@ -318,11 +347,13 @@ export class RagService {
     context?: AiUsageContext,
   ): Promise<number[]> {
     try {
-      const response = await openai.embeddings.create({
-        model: 'text-embedding-3-small',
-        input: text,
-        dimensions: 768,
-      })
+      const response = await withRetry(() =>
+        openai.embeddings.create({
+          model: 'text-embedding-3-small',
+          input: text,
+          dimensions: 768,
+        }),
+      )
 
       this.aiUsageLogService.logText({
         userId: context?.userId,
@@ -471,12 +502,14 @@ Return JSON only:
 {"language":"<original language and script>","rewrittenQuery":"<clear English query>"}`
 
     try {
-      const completion = await deepseek.chat.completions.create({
-        model: CHAT_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-        max_tokens: 150,
-      })
+      const completion = await withRetry(() =>
+        deepseek.chat.completions.create({
+          model: CHAT_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0,
+          max_tokens: 150,
+        }),
+      )
 
       this.aiUsageLogService.logText({
         userId: null,
@@ -832,12 +865,14 @@ JSON only:
     )
 
     try {
-      const completion = await deepseek.chat.completions.create({
-        model: CHAT_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0,
-        max_tokens: 500,
-      })
+      const completion = await withRetry(() =>
+        deepseek.chat.completions.create({
+          model: CHAT_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0,
+          max_tokens: 500,
+        }),
+      )
 
       this.aiUsageLogService.logText({
         userId: null,
@@ -1143,8 +1178,8 @@ Rules:
       { asType: 'generation' },
     )
 
-    const stream =
-      await deepseek.chat.completions.create({
+    const stream = await withRetry(() =>
+      deepseek.chat.completions.create({
         model: CHAT_MODEL,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0,
@@ -1153,7 +1188,8 @@ Rules:
         stream_options: {
           include_usage: true,
         },
-      })
+      }),
+    )
 
     let fullAnswer = ''
     let promptTokens = 0
