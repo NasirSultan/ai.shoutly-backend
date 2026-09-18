@@ -1,8 +1,17 @@
-import { IsString, IsNotEmpty, IsOptional, IsInt, Min, Max } from 'class-validator'
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsInt,
+  Min,
+  Max,
+  MaxLength,
+} from 'class-validator'
 
 export class ChatQueryDto {
   @IsString()
   @IsNotEmpty()
+  @MaxLength(2000)
   query: string
 
   @IsInt()
