@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import  {CalendarModule } from './calendar/calendar.module';
@@ -32,7 +33,7 @@ import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
 import { MetaModule } from './meta/meta.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }),LogoOverlayModule, FacebookModule,IndustriesModule, AuthModule,
+  imports: [ConfigModule.forRoot({ isGlobal: true }), EventEmitterModule.forRoot(),LogoOverlayModule, FacebookModule,IndustriesModule, AuthModule,
     UserModule, BrevoModule,
       JwtModule.register({
       secret: process.env.JWT_SECRET, // must be defined in .env

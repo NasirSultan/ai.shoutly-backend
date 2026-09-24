@@ -121,13 +121,11 @@
 
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { Worker, Job } from 'bullmq'
+import { EventEmitter2 } from '@nestjs/event-emitter'
 import { RedisService } from '../common/redis/redis.service'
-import { BrevoService } from '../brevo/brevo.service'
-import { DateTime } from 'luxon'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
-import { normalizeTimezone } from '../common/utils/timezone.util'
-import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
+import { PostPublishedEvent } from '../events/post-published.event'
 
 interface PublishJobData {
   calendarPostId: string
@@ -143,7 +141,7 @@ export class PostWorker implements OnModuleInit {
 
   constructor(
     private readonly redisService: RedisService,
-    private readonly brevoService: BrevoService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
   }
@@ -281,25 +279,23 @@ export class PostWorker implements OnModuleInit {
         data: { status: 'POSTED' },
       })
 
-      // 6. Push transactional status confirmation email to user via Brevo
+      // 6. Announce the publish — decoupled from sending the notification
+      // email itself. Fire-and-forget: publishing succeeded regardless of
+      // whether the email later succeeds, so this doesn't await anything.
       if (user.email) {
-        const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
-        const postedAt = DateTime.now().setZone(tz).toFormat("MMM dd, yyyy 'at' hh:mm a")
-        const platformRows = buildPlatformRowsHtml(
-          activeAccounts.map((acc) => ({
-            platform: acc.platform || 'Unknown',
-            accountName: acc.username || acc.platform || 'Connected account',
-            postedAt,
-          })),
+        this.eventEmitter.emit(
+          'post.published',
+          new PostPublishedEvent(
+            user.email,
+            user.name || 'Creator',
+            activeAccounts.map((acc) => ({
+              platform: acc.platform || 'Unknown',
+              accountName: acc.username || acc.platform || 'Connected account',
+            })),
+            new Date(),
+            user.timezone,
+          ),
         )
-
-        await this.brevoService.sendPostPublishedEmail(
-          user.email,
-          user.name || 'Creator',
-          platformRows,
-        ).catch((err) => {
-          console.error('[Brevo Alert Failed]:', err?.message || err?.response?.data || JSON.stringify(err))
-        })
       }
 
       return response.data

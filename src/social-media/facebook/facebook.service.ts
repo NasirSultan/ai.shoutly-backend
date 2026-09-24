@@ -1,11 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { CreatePostDto ,DirectPostDto} from './dto/post.dto';
-import { DateTime } from 'luxon'
-import { BrevoService } from 'src/brevo/brevo.service'
+import { EventEmitter2 } from '@nestjs/event-emitter'
 import { prisma } from '../../lib/prisma';
-import { normalizeTimezone } from '../../common/utils/timezone.util';
-import { buildPlatformRowsHtml } from '../../common/utils/email-template.util';
+import { PostPublishedEvent } from '../../events/post-published.event';
 
 
 @Injectable()
@@ -13,11 +11,8 @@ export class FacebookService {
   private readonly appId = process.env.FB_APP_ID;
   private readonly appSecret = process.env.FB_APP_SECRET;
   private readonly redirectUri = process.env.FB_REDIRECT_URI;
-  private readonly brevoService: BrevoService;
 
-  constructor(brevoService: BrevoService) {
-    this.brevoService = brevoService;
-  }
+  constructor(private readonly eventEmitter: EventEmitter2) {}
 
   getOAuthUrl(state: string): string {
     return (
@@ -214,17 +209,16 @@ async directPost(dto: DirectPostDto) {
   })
 
   if (user?.email) {
-    const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
-    const postedAt = DateTime.now().setZone(tz).toFormat('MMM dd, yyyy \'at\' hh:mm a')
-    const platformRows = buildPlatformRowsHtml([
-      { platform: 'facebook', accountName: defaultPage.pageName || defaultPage.pageId, postedAt },
-    ])
-
-    await this.brevoService.sendPostPublishedEmail(
-      user.email,
-      user.name,
-      platformRows,
-    ).catch((err) => console.error('[Brevo] Email failed:', err.message))
+    this.eventEmitter.emit(
+      'post.published',
+      new PostPublishedEvent(
+        user.email,
+        user.name || 'Creator',
+        [{ platform: 'facebook', accountName: defaultPage.pageName || defaultPage.pageId }],
+        new Date(),
+        user.timezone,
+      ),
+    )
   }
 
   return result
