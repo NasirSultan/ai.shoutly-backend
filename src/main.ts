@@ -5,6 +5,7 @@ import { AppModule } from './app.module'
 import * as path from 'path'
 import dotenv from 'dotenv'
 import { langfuseSpanProcessor } from './instrumentation'
+import { corsOptionsDelegate } from './common/cors.config'
 dotenv.config()
 
 async function bootstrap() {
@@ -12,11 +13,7 @@ async function bootstrap() {
   app.useStaticAssets(path.join(__dirname, '..', 'public'))
   app.setGlobalPrefix('api')
 
-  app.enableCors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    credentials: true
-  })
+  app.enableCors(corsOptionsDelegate)
 
   const port = process.env.PORT || 3000
 

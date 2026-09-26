@@ -412,6 +412,41 @@ model ContactForm {
   updatedAt DateTime      @updatedAt
 }
 
+// "Send us a message" form on /contact-us (POST /api/contact). Replaces
+// ContactForm, which is kept only so existing rows aren't dropped.
+enum ContactInquiryType {
+  sales
+  support
+  partner
+  press
+}
+
+enum ContactMessageStatus {
+  new
+  in_progress
+  resolved
+}
+
+model ContactMessage {
+  id          String               @id @default(uuid())
+  // Source of the human-readable reference (SH-<year>-<seq padded to 6>).
+  seq         Int                  @unique @default(autoincrement())
+  reference   String?              @unique
+  inquiryType ContactInquiryType   @map("inquiry_type")
+  name        String
+  email       String
+  phone       String?
+  detail      String
+  message     String
+  status      ContactMessageStatus @default(new)
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("contact_messages")
+}
+
 model Festival {
   id        String          @id @default(uuid())
   date      DateTime
