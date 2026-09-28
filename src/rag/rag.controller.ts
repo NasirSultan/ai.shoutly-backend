@@ -14,7 +14,7 @@ import {
   ValidationPipe,
   UseGuards,
 } from '@nestjs/common'
-import { Response } from 'express'
+import type { Request, Response } from 'express'
 import { RagService } from './rag.service'
 import { UploadDocumentDto } from './dto/upload-document.dto'
 import { BulkUploadDto } from './dto/bulk-upload.dto'
@@ -22,6 +22,14 @@ import { ChatQueryDto } from './dto/chat-query.dto'
 import { UpdateDocumentDto } from './dto/update-document.dto'
 import { AuthGuard } from '../common/guards/auth.guard'
 import { RolesGuard } from '../common/guards/roles.guard'
+
+// First hop in X-Forwarded-For is the client when running behind a proxy —
+// same convention as ContactController's getClientIp.
+function getClientIp(req: Request) {
+  const forwarded = req.headers['x-forwarded-for']
+  const first = (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(',')[0]?.trim()
+  return first || req.ip || req.socket.remoteAddress || 'unknown'
+}
 
 @Controller('rag')
 export class RagController {
@@ -95,8 +103,8 @@ export class RagController {
    */
   @Post('chat')
   @HttpCode(HttpStatus.OK)
-  chat(@Body(ValidationPipe) dto: ChatQueryDto) {
-    return this.ragService.chat(dto)
+  chat(@Body(ValidationPipe) dto: ChatQueryDto, @Req() req: Request) {
+    return this.ragService.chat(dto, getClientIp(req))
   }
 
   /**
@@ -105,7 +113,8 @@ export class RagController {
    */
   @Post('search')
   @HttpCode(HttpStatus.OK)
-  search(@Body(ValidationPipe) dto: ChatQueryDto) {
+  async search(@Body(ValidationPipe) dto: ChatQueryDto, @Req() req: Request) {
+    await this.ragService.assertChatRateLimit(getClientIp(req))
     return this.ragService.searchSimilar(dto.query, dto.topK)
   }
 
@@ -117,8 +126,13 @@ export class RagController {
   @Post('chat/stream')
   async streamChat(
     @Body(ValidationPipe) dto: ChatQueryDto,
+    @Req() req: Request,
     @Res() res: Response,
   ) {
+    // Must happen before any header is sent: once the SSE response starts,
+    // the status code is committed and a 429 can no longer be delivered.
+    await this.ragService.assertChatRateLimit(getClientIp(req))
+
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')

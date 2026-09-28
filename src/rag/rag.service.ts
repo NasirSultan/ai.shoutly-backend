@@ -1,4 +1,6 @@
 import {
+  HttpException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -14,6 +16,7 @@ import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 import { Cta } from './chatbot-flow.config'
 import { RedisService } from '../common/redis/redis.service'
 import { randomUUID } from 'crypto'
+import { redactPii } from '../common/utils/pii-redaction.util'
 import {
   startObservation,
   startActiveObservation,
@@ -157,6 +160,25 @@ function sanitizeForPrompt(text: string): string {
 
 const DECLINE_MESSAGE =
   "I can't help with that request. If you have a question about ShoutlyAI, I'm happy to help."
+
+// /rag/chat and /rag/chat/stream are public, unauthenticated endpoints —
+// nothing stops a script from hitting them as fast as it can, and every hit
+// costs a real OpenAI/DeepSeek call. IP-keyed, same sliding-window pattern
+// as ContactService's rate limiter, generous enough for a real back-and-
+// forth conversation.
+const CHAT_RATE_LIMIT = { max: 30, windowMs: 5 * 60 * 1000 }
+
+export class RagRateLimitedException extends HttpException {
+  constructor(public readonly retryAfterSeconds: number) {
+    super(
+      {
+        success: false,
+        error: 'Too many requests. Please try again shortly.',
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    )
+  }
+}
 
 interface ParsedChatAnswer {
   answer: string
@@ -456,6 +478,50 @@ export class RagService {
     }
   }
 
+  // Sliding-window limiter, same storage pattern as ContactService's. Fails
+  // open (returns null, lets the request through) if Redis itself is
+  // unavailable — a Redis blip should never take the chatbot down.
+  private async checkRateLimit(
+    key: string,
+    limit: { max: number; windowMs: number },
+  ): Promise<number[] | null> {
+    let attempts: number[]
+
+    try {
+      const stored = await this.redis.getClient().get(key)
+      const now = Date.now()
+      attempts = stored
+        ? JSON.parse(stored).filter((t: number) => now - t < limit.windowMs)
+        : []
+    } catch (error: any) {
+      this.logger.warn(`rate limiter unavailable: ${error.message}`)
+      return null
+    }
+
+    if (attempts.length >= limit.max) {
+      const retryAfter = Math.ceil(
+        (limit.windowMs - (Date.now() - Math.min(...attempts))) / 1000,
+      )
+      throw new RagRateLimitedException(Math.max(1, retryAfter))
+    }
+
+    return attempts
+  }
+
+  private async recordRateLimitAttempt(
+    key: string,
+    attempts: number[] | null,
+    windowMs: number,
+  ): Promise<void> {
+    if (!attempts) return
+
+    attempts.push(Date.now())
+
+    await this.redis
+      .getClient()
+      .set(key, JSON.stringify(attempts), { PX: windowMs })
+  }
+
   async indexDocument(
     dto: UploadDocumentDto,
     context?: AiUsageContext,
@@ -728,7 +794,20 @@ Return JSON only:
     }))
   }
 
-  async chat(dto: ChatQueryDto): Promise<ChatResponse> {
+  // Exposed separately (not just inlined in chat()) because streamChat()'s
+  // controller must call this BEFORE it sends SSE headers — by the time an
+  // error thrown from inside the streamChat() generator body would reach
+  // the controller, the response is already committed to 200, and a 429
+  // can no longer be sent.
+  async assertChatRateLimit(ip: string): Promise<void> {
+    const key = `rag_chat_rl:${ip}`
+    const attempts = await this.checkRateLimit(key, CHAT_RATE_LIMIT)
+    await this.recordRateLimitAttempt(key, attempts, CHAT_RATE_LIMIT.windowMs)
+  }
+
+  async chat(dto: ChatQueryDto, ip: string): Promise<ChatResponse> {
+    await this.assertChatRateLimit(ip)
+
     return startActiveObservation('rag-chat', (rootSpan) =>
       propagateAttributes(
         { sessionId: dto.sessionId },
@@ -1036,18 +1115,24 @@ JSON only:
         `[chat] final answer (confidence: ${confidence}): "${parsed.answer}"`,
       )
 
+      // Redact before anything gets persisted for reuse — the response
+      // returned to THIS user keeps the original text (echoing back their
+      // own info to them isn't a leak), but a stored copy can end up served
+      // to a different user later, so it never keeps raw PII.
+      const storedAnswer = redactPii(parsed.answer)
+
       // Only cache confident, first-turn answers — a "low" confidence reply
       // is often a fallback/uncertain answer we don't want replayed to
       // future similar queries.
       if (isFirstTurn && confidence !== 'low') {
-        this.semanticCache.set(parsed.answer, queryEmbedding, language)
+        this.semanticCache.set(storedAnswer, queryEmbedding, language)
       }
 
       this.conversationMemory
         .addTurn(
           dto.sessionId,
           dto.query,
-          parsed.answer,
+          storedAnswer,
           queryEmbedding,
         )
         .catch((err) =>
@@ -1392,8 +1477,13 @@ Rules:
     trace.update({ output: fullAnswer })
     trace.end()
 
-    if (isFirstTurn && fullAnswer.trim()) {
-      this.semanticCache.set(fullAnswer, queryEmbedding, language)
+    // Redact before persisting — the client already received the raw
+    // stream, so this only affects the stored copy that could later be
+    // replayed to a different user.
+    const storedAnswer = redactPii(fullAnswer)
+
+    if (isFirstTurn && storedAnswer.trim()) {
+      this.semanticCache.set(storedAnswer, queryEmbedding, language)
     }
 
     this.logger.log(
@@ -1404,7 +1494,7 @@ Rules:
       .addTurn(
         dto.sessionId,
         dto.query,
-        fullAnswer,
+        storedAnswer,
         queryEmbedding,
       )
       .catch((err) =>
