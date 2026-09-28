@@ -11,7 +11,7 @@ import {
 export class ChatQueryDto {
   @IsString()
   @IsNotEmpty()
-  @MaxLength(2000)
+  @MaxLength(150)
   query: string
 
   @IsInt()

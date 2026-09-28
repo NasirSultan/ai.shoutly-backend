@@ -61,13 +61,13 @@ async function testSystemPromptExtraction() {
 }
 
 async function testInputLengthCap() {
-  const longQuery = 'a'.repeat(2001)
+  const longQuery = 'a'.repeat(151)
   const res = await fetch(`${BASE_URL}/rag/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query: longQuery }),
   })
-  record('Input over 2000 chars is rejected', res.status === 400, `status=${res.status}`)
+  record('Input over 150 chars is rejected', res.status === 400, `status=${res.status}`)
 }
 
 async function testNormalRequestStillWorks() {
