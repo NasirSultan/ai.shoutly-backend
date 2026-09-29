@@ -164,9 +164,9 @@ const DECLINE_MESSAGE =
 // /rag/chat and /rag/chat/stream are public, unauthenticated endpoints —
 // nothing stops a script from hitting them as fast as it can, and every hit
 // costs a real OpenAI/DeepSeek call. IP-keyed, same sliding-window pattern
-// as ContactService's rate limiter, generous enough for a real back-and-
-// forth conversation.
-const CHAT_RATE_LIMIT = { max: 30, windowMs: 5 * 60 * 1000 }
+// as ContactService's rate limiter. Single daily cap (no separate burst
+// window) — 15/day bounds total per-IP cost regardless of pacing.
+const CHAT_RATE_LIMIT = { max: 15, windowMs: 24 * 60 * 60 * 1000 }
 
 export class RagRateLimitedException extends HttpException {
   constructor(public readonly retryAfterSeconds: number) {

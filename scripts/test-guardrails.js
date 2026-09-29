@@ -86,9 +86,9 @@ async function testPiiNotEchoedIntoAnswer() {
 }
 
 async function testRateLimit() {
-  // CHAT_RATE_LIMIT is 30 requests / 5 minutes per IP — fire 32 in a burst
-  // and confirm at least one gets a 429 before the burst ends. Skipped by
-  // default since it pollutes the limiter's window for real usage right
+  // CHAT_RATE_LIMIT is 15 requests / day per IP — fire 17 in a burst and
+  // confirm at least one gets a 429 before the burst ends. Skipped by
+  // default since it burns most of the day's window for real usage right
   // after; opt in with RAG_TEST_RATE_LIMIT=1.
   if (process.env.RAG_TEST_RATE_LIMIT !== '1') {
     console.log('… SKIP  — Rate limit enforced after burst (set RAG_TEST_RATE_LIMIT=1 to run)')
@@ -96,7 +96,7 @@ async function testRateLimit() {
   }
 
   let sawLimitHit = false
-  for (let i = 0; i < 32; i++) {
+  for (let i = 0; i < 17; i++) {
     const res = await fetch(`${BASE_URL}/rag/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
