@@ -1,4 +1,4 @@
-import { Controller, Post, Body ,UploadedFile, UseInterceptors } from '@nestjs/common'
+import { Controller, Post, Body ,UploadedFile, UseInterceptors, ValidationPipe } from '@nestjs/common'
 import { AuthService } from './auth.service'
 import { FileInterceptor } from '@nestjs/platform-express'
 import { RegisterDto } from './dto/register.dto'
@@ -17,8 +17,11 @@ export class AuthController {
       private readonly imgbbService: ImgbbService
   ) {}
 
+// ValidationPipe enforces RegisterDto's rules (e.g. @IsEmail), so a sign-up
+// with the fields mixed up (password typed into Email) is rejected with 400
+// instead of creating an account whose "email" isn't an email.
 @Post('register')
-async register(@Body() dto: RegisterDto) {
+async register(@Body(new ValidationPipe({ whitelist: true })) dto: RegisterDto) {
   return this.authService.register(dto.name, dto.email, dto.role)
 }
 
