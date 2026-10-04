@@ -44,6 +44,7 @@ model User {
   twoFactorSecret  String?
   twoFactorEnabled Boolean          @default(false)
   subscriptions    Subscription[]
+  payments         Payment[]
   connectedSocials SocialPlatform[] @default([])
   jobTitle         String?
   industryId       String?
@@ -278,8 +279,38 @@ model Subscription {
   startedAt DateTime  @default(now())
   expiresAt DateTime?
   isActive  Boolean   @default(true)
+  payment   Payment?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+}
+
+// One row per Razorpay order. The subscription is only created once the
+// payment is verified (checkout signature or webhook), and subscriptionId
+// being set is what makes activation idempotent across both paths.
+model Payment {
+  id                String        @id @default(uuid())
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?       @unique
+  billing           Billing
+  currency          Currency
+  amount            Float
+  status            PaymentStatus @default(CREATED)
+  failureReason     String?
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  subscriptionId    String?       @unique
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   @@index([userId])
 }

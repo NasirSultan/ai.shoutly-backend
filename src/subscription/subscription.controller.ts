@@ -1,7 +1,9 @@
-import { Controller, Post, Body, Get, Req, Query, Param, Res, UseGuards } from "@nestjs/common";
+import { Controller, Post, Body, Get, Req, Query, Param, Res, UseGuards, ValidationPipe } from "@nestjs/common";
 import { Response } from "express";
 import { SubscriptionService } from "./subscription.service";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
+import { VerifyPaymentDto } from "./dto/verify-payment.dto";
+import { PaymentService } from "./payment.service";
 import { AuthGuard } from "../common/guards/auth.guard";
 import { RolesGuard } from "../common/guards/roles.guard";
 import { toCsv } from "../common/utils/csv.util";
@@ -12,20 +14,36 @@ import { AuditLogService } from "../audit-log/audit-log.service";
 export class SubscriptionController {
   constructor(
     private readonly subscriptionService: SubscriptionService,
+    private readonly paymentService: PaymentService,
     private readonly auditLogService: AuditLogService,
   ) {}
 
-  @Post("buy")
-  async buy(@Req() req, @Body() dto: CreateSubscriptionDto) {
+  // Step 1 of checkout: creates a Razorpay order; the frontend opens Razorpay
+  // Checkout with the returned keyId/orderId/amount.
+  @Post("create-order")
+  async createOrder(@Req() req, @Body(new ValidationPipe({ whitelist: true })) dto: CreateSubscriptionDto) {
+    return this.paymentService.createOrder(req.user.id, dto);
+  }
+
+  // Step 2 of checkout: the plan is only activated after the payment signature
+  // is verified and Razorpay confirms the payment was captured.
+  @Post("verify")
+  async verify(@Req() req, @Body(new ValidationPipe({ whitelist: true })) dto: VerifyPaymentDto) {
     const userId = req.user.id;
-    const result = await this.subscriptionService.buySubscription(userId, dto);
+    const result = await this.paymentService.verifyCheckout(userId, dto);
 
     this.auditLogService.log({
       actor: { id: userId, email: req.user.email },
       action: "SUBSCRIPTION_PURCHASED",
       targetType: "Subscription",
       targetId: result?.subscription?.id ?? userId,
-      after: { plan: result?.subscription?.plan, billing: result?.subscription?.billing, price: result?.price, currency: result?.currency },
+      after: {
+        plan: result?.subscription?.plan,
+        billing: result?.subscription?.billing,
+        price: result?.price,
+        currency: result?.currency,
+        razorpayPaymentId: dto.razorpay_payment_id,
+      },
     });
 
     return result;
