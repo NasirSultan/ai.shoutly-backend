@@ -109,7 +109,9 @@ enum LogoPosition {
 
 enum Plan {
   STARTER
-  GROWTH
+  GROWTH // legacy: the old single plan, no longer sold; existing subscribers keep it
+  BUSINESS
+  AUTOPILOT
 }
 
 enum Billing {
@@ -301,6 +303,7 @@ model Payment {
   userId            String
   razorpayOrderId   String        @unique
   razorpayPaymentId String?       @unique
+  plan              Plan          @default(GROWTH)
   billing           Billing
   currency          Currency
   amount            Float

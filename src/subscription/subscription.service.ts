@@ -1,5 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException } from "@nestjs/common";
-import { PlanPrices, Billing, Currency } from "./subscription.constants";
+import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
 import { prisma } from "../lib/prisma";
 import { CSV_EXPORT_ROW_LIMIT } from "../common/utils/csv.util";
 
@@ -21,6 +21,7 @@ export class SubscriptionService {
 
     return {
       hasActivePlan: true,
+      plan: subscription.plan,
       isTrial: subscription.isTrial,
       billing: subscription.billing,
       currency: subscription.currency,
@@ -38,8 +39,8 @@ export class SubscriptionService {
     });
   }
 
-  getPrice(billing: Billing, currency: Currency) {
-    return PlanPrices[currency][billing];
+  getPrice(plan: Plan, billing: Billing, currency: Currency) {
+    return PlanPrices[plan][currency][billing];
   }
 
   async getAllPaymentsForAdmin(opts: {
