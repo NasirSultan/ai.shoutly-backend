@@ -1,56 +1,10 @@
 import { Injectable, BadRequestException, NotFoundException } from "@nestjs/common";
-import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
-import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
+import { PlanPrices, Billing, Currency } from "./subscription.constants";
 import { prisma } from "../lib/prisma";
 import { CSV_EXPORT_ROW_LIMIT } from "../common/utils/csv.util";
 
 @Injectable()
 export class SubscriptionService {
-  async buySubscription(userId: string, dto: CreateSubscriptionDto) {
-    const { billing, currency } = dto;
-
-    if (!Object.values(Billing).includes(billing)) {
-      throw new BadRequestException(`Invalid billing cycle: ${billing}`);
-    }
-    if (!Object.values(Currency).includes(currency)) {
-      throw new BadRequestException(`Invalid currency: ${currency}`);
-    }
-
-    const activeSub = await prisma.subscription.findFirst({
-      where: { userId, isActive: true },
-    });
-    if (activeSub) {
-      await prisma.subscription.update({
-        where: { id: activeSub.id },
-        data: { isActive: false },
-      });
-    }
-
-    const now = new Date();
-    const expiresAt =
-      billing === Billing.MONTHLY
-        ? new Date(now.setMonth(now.getMonth() + 1))
-        : new Date(now.setFullYear(now.getFullYear() + 1));
-
-    const amount = PlanPrices[currency][billing];
-
-    const newSub = await prisma.subscription.create({
-      data: {
-        userId,
-        plan: Plan.FULL_POWER as any,
-        billing: billing as any,
-        currency: currency as any,
-        amount,
-        startedAt: new Date(),
-        expiresAt,
-        isActive: true,
-        isTrial: false,
-      },
-    });
-
-    return { subscription: newSub, price: amount, currency };
-  }
-
   async getCurrentPlan(userId: string) {
     const subscription = await prisma.subscription.findFirst({
       where: { userId, isActive: true },
