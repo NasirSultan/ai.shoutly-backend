@@ -318,6 +318,24 @@ model Payment {
   @@index([userId])
 }
 
+// One row per "pay to download this template" Razorpay order. No login is
+// needed for templates, so this is keyed by the render, not a user.
+model TemplatePurchase {
+  id                String        @id @default(uuid())
+  renderId          String
+  imageUrl          String
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?       @unique
+  amount            Float
+  currency          Currency
+  status            PaymentStatus @default(CREATED)
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([renderId])
+}
+
 model CalendarPost {
   id            String      @id @default(uuid())
   userId        String

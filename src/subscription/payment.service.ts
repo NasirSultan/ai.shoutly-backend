@@ -47,13 +47,10 @@ export class PaymentService {
   async createOrder(userId: string, dto: CreateSubscriptionDto) {
     const { plan, billing, currency } = dto;
     const amount = PlanPrices[plan][currency][billing];
-    const { keyId } = this.getCredentials();
-
-    const order = await this.getClient().orders.create({
-      amount: toMinorUnits(amount),
-      currency,
-      receipt: `sub_${Date.now()}`,
-      notes: { userId, plan, billing },
+    const { keyId, order } = await this.createRazorpayOrder(amount, currency, `sub_${Date.now()}`, {
+      userId,
+      plan,
+      billing,
     });
 
     await prisma.payment.create({
@@ -77,16 +74,22 @@ export class PaymentService {
     };
   }
 
-  // Step 2: called by the frontend with what Razorpay Checkout's handler returns.
-  async verifyCheckout(userId: string, dto: VerifyPaymentDto) {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = dto;
-
-    const payment = await prisma.payment.findUnique({
-      where: { razorpayOrderId: razorpay_order_id },
+  // Shared by plan purchases and per-template purchases.
+  async createRazorpayOrder(amount: number, currency: string, receipt: string, notes: Record<string, string>) {
+    const { keyId } = this.getCredentials();
+    const order = await this.getClient().orders.create({
+      amount: toMinorUnits(amount),
+      currency,
+      receipt,
+      notes,
     });
-    if (!payment || payment.userId !== userId) {
-      throw new NotFoundException("Order not found.");
-    }
+    return { keyId, order };
+  }
+
+  // Checks the Checkout signature and that Razorpay actually captured the
+  // expected amount for this order. Throws if anything doesn't line up.
+  async confirmCapturedPayment(dto: VerifyPaymentDto, expectedAmount: number) {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = dto;
 
     const { keySecret } = this.getCredentials();
     if (!this.signatureMatches(`${razorpay_order_id}|${razorpay_payment_id}`, keySecret, razorpay_signature)) {
@@ -97,7 +100,7 @@ export class PaymentService {
     // also make sure the money was actually captured for the expected amount.
     const client = this.getClient();
     let rzpPayment = await client.payments.fetch(razorpay_payment_id);
-    if (rzpPayment.order_id !== razorpay_order_id || Number(rzpPayment.amount) !== toMinorUnits(payment.amount)) {
+    if (rzpPayment.order_id !== razorpay_order_id || Number(rzpPayment.amount) !== toMinorUnits(expectedAmount)) {
       throw new BadRequestException("Payment does not match this order.");
     }
     if (rzpPayment.status === "authorized") {
@@ -106,6 +109,20 @@ export class PaymentService {
     if (rzpPayment.status !== "captured") {
       throw new BadRequestException(`Payment is ${rzpPayment.status}, not captured.`);
     }
+  }
+
+  // Step 2: called by the frontend with what Razorpay Checkout's handler returns.
+  async verifyCheckout(userId: string, dto: VerifyPaymentDto) {
+    const { razorpay_order_id, razorpay_payment_id } = dto;
+
+    const payment = await prisma.payment.findUnique({
+      where: { razorpayOrderId: razorpay_order_id },
+    });
+    if (!payment || payment.userId !== userId) {
+      throw new NotFoundException("Order not found.");
+    }
+
+    await this.confirmCapturedPayment(dto, payment.amount);
 
     const subscription = await this.activate(payment.id, razorpay_payment_id);
     return { subscription, price: payment.amount, currency: payment.currency };
@@ -189,6 +206,13 @@ export class PaymentService {
       where: { razorpayOrderId: entity.order_id },
     });
     if (!payment) {
+      const templatePurchase = await prisma.templatePurchase.findUnique({
+        where: { razorpayOrderId: entity.order_id },
+      });
+      if (templatePurchase) {
+        await this.handleTemplateWebhook(event.event, entity, templatePurchase);
+        return { received: true };
+      }
       this.logger.warn(`Webhook ${event.event} for unknown order ${entity.order_id}`);
       return { received: true };
     }
@@ -211,5 +235,31 @@ export class PaymentService {
     }
 
     return { received: true };
+  }
+
+  private async handleTemplateWebhook(
+    eventName: string,
+    entity: any,
+    purchase: { id: string; amount: number; currency: string },
+  ) {
+    switch (eventName) {
+      case "payment.captured":
+      case "order.paid":
+        if (Number(entity.amount) !== toMinorUnits(purchase.amount) || entity.currency !== purchase.currency) {
+          this.logger.error(`Amount mismatch on template order ${entity.order_id}: got ${entity.amount} ${entity.currency}`);
+          return;
+        }
+        await prisma.templatePurchase.updateMany({
+          where: { id: purchase.id, status: { not: "PAID" } },
+          data: { status: "PAID", razorpayPaymentId: entity.id, paidAt: new Date() },
+        });
+        return;
+      case "payment.failed":
+        await prisma.templatePurchase.updateMany({
+          where: { id: purchase.id, status: "CREATED" },
+          data: { status: "FAILED" },
+        });
+        return;
+    }
   }
 }

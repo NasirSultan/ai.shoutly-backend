@@ -10,5 +10,6 @@ import { AuditLogModule } from "../audit-log/audit-log.module";
   imports: [AuthModule, AuditLogModule],
   controllers: [SubscriptionController, RazorpayWebhookController],
   providers: [SubscriptionService, PaymentService],
+  exports: [PaymentService],
 })
 export class SubscriptionModule {}
