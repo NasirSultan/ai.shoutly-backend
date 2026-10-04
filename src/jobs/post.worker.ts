@@ -165,8 +165,11 @@ export class PostWorker implements OnModuleInit {
       console.error(`[Outstand Worker] Job ${job?.id} structural processing failed:`, err.message)
 
       if (job && job.attemptsMade >= (job.opts.attempts || 3)) {
-        await prisma.calendarPost.update({
-          where: { id: job.data.calendarPostId },
+        // Only a post still in flight can fail. Matching on POSTING means a
+        // stray duplicate job can never overwrite a post that another job
+        // already published (POSTED) or that was skipped (SKIP).
+        await prisma.calendarPost.updateMany({
+          where: { id: job.data.calendarPostId, status: 'POSTING' },
           data: { status: 'FAILED' },
         })
       }
@@ -223,8 +226,18 @@ export class PostWorker implements OnModuleInit {
       },
     })
 
-    if (!post) throw new Error(`Post ${calendarPostId} not found`)
-    if (post.status !== 'POSTING') throw new Error(`Post ${calendarPostId} already handled: ${post.status}`)
+    // A post that's gone or no longer POSTING was already handled (e.g. a
+    // duplicate job for a post another job just published). That's not a
+    // failure: finish quietly instead of throwing, so BullMQ doesn't retry it
+    // and the failed handler never touches the post's status.
+    if (!post) {
+      console.warn(`[Outstand Worker] Post ${calendarPostId} no longer exists — skipping.`)
+      return { skipped: true, reason: 'not-found' }
+    }
+    if (post.status !== 'POSTING') {
+      console.warn(`[Outstand Worker] Post ${calendarPostId} already handled (${post.status}) — skipping duplicate job.`)
+      return { skipped: true, reason: `already-${post.status.toLowerCase()}` }
+    }
 
     const { user } = post
     const targetPlatforms = post.targetPlatforms ?? []
