@@ -8,7 +8,7 @@ import {
 import Razorpay from "razorpay";
 import { createHmac, timingSafeEqual } from "crypto";
 import { addMonths, addYears } from "date-fns";
-import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
+import { PlanPrices, Billing } from "./subscription.constants";
 import { CreateSubscriptionDto } from "./dto/create-subscription.dto";
 import { VerifyPaymentDto } from "./dto/verify-payment.dto";
 import { prisma } from "../lib/prisma";
@@ -45,21 +45,22 @@ export class PaymentService {
 
   // Step 1: the price is decided here on the server, never taken from the client.
   async createOrder(userId: string, dto: CreateSubscriptionDto) {
-    const { billing, currency } = dto;
-    const amount = PlanPrices[currency][billing];
+    const { plan, billing, currency } = dto;
+    const amount = PlanPrices[plan][currency][billing];
     const { keyId } = this.getCredentials();
 
     const order = await this.getClient().orders.create({
       amount: toMinorUnits(amount),
       currency,
       receipt: `sub_${Date.now()}`,
-      notes: { userId, plan: Plan.FULL_POWER, billing },
+      notes: { userId, plan, billing },
     });
 
     await prisma.payment.create({
       data: {
         userId,
         razorpayOrderId: order.id,
+        plan: plan as any,
         billing: billing as any,
         currency: currency as any,
         amount,
@@ -71,7 +72,7 @@ export class PaymentService {
       orderId: order.id,
       amount: order.amount,
       currency: order.currency,
-      plan: Plan.FULL_POWER,
+      plan,
       billing,
     };
   }
@@ -128,10 +129,15 @@ export class PaymentService {
       const current = await tx.subscription.findFirst({
         where: { userId: payment.userId, isActive: true },
       });
-      // Renewing a paid plan early extends it from its current end date
-      // instead of throwing away the days already paid for.
+      // Renewing the same paid plan early extends it from its current end
+      // date instead of throwing away the days already paid for. Switching to
+      // a different plan (upgrade/downgrade) starts the new plan right away.
       const base =
-        current && !current.isTrial && current.expiresAt && current.expiresAt > now
+        current &&
+        !current.isTrial &&
+        current.plan === payment.plan &&
+        current.expiresAt &&
+        current.expiresAt > now
           ? current.expiresAt
           : now;
       const expiresAt = payment.billing === Billing.MONTHLY ? addMonths(base, 1) : addYears(base, 1);
@@ -144,7 +150,7 @@ export class PaymentService {
       const subscription = await tx.subscription.create({
         data: {
           userId: payment.userId,
-          plan: Plan.FULL_POWER as any,
+          plan: payment.plan,
           billing: payment.billing,
           currency: payment.currency,
           amount: payment.amount,
