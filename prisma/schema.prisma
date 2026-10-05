@@ -354,9 +354,11 @@ enum TemplateCreditReason {
 // template download; at 0 the user pays per template through Razorpay.
 model TemplateCredit {
   id        String   @id @default(uuid())
-  email     String   @unique
-  balance   Int      @default(0)
-  createdAt DateTime @default(now())
+  email      String    @unique
+  balance    Int       @default(0)
+  // Set the first time the email passes OTP; after that send-otp skips the code.
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
   updatedAt DateTime @updatedAt
 }
 
