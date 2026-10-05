@@ -68,9 +68,28 @@ export class TemplateCreditService {
     return `template-credit:otp:${email}`;
   }
 
+  private signCreditToken(email: string) {
+    return this.jwtLibService.sign({ purpose: CREDIT_TOKEN_PURPOSE, email }, { expiresIn: CREDIT_TOKEN_TTL_SECONDS });
+  }
+
+  // An email verified once before skips the OTP and gets a creditToken
+  // straight away (product decision: convenience over re-proving ownership).
+  // Otherwise a code is emailed.
   async sendOtp(rawEmail: string) {
     const email = normalizeEmail(rawEmail);
     await this.hitRateLimit('template_credit_otp_send', email, MAX_OTP_SENDS, true);
+
+    const account = await prisma.templateCredit.findUnique({ where: { email } });
+    if (account?.verifiedAt) {
+      return {
+        verified: true,
+        message: 'Email already verified',
+        email,
+        balance: account.balance,
+        creditToken: this.signCreditToken(email),
+        expiresIn: CREDIT_TOKEN_TTL_SECONDS,
+      };
+    }
 
     const otp = generateOtp();
     await this.redisService.getClient().set(this.otpKey(email), hashOtp(otp), { EX: OTP_TTL_SECONDS });
@@ -82,7 +101,7 @@ export class TemplateCreditService {
       throw new InternalServerErrorException('Could not send the verification code. Please try again.');
     }
 
-    return { message: 'Verification code sent', email, expiresIn: OTP_TTL_SECONDS };
+    return { verified: false, message: 'Verification code sent', email, expiresIn: OTP_TTL_SECONDS };
   }
 
   // Proves the user owns the email. A brand-new email gets its welcome credit here.
@@ -100,12 +119,9 @@ export class TemplateCreditService {
     await client.del(this.otpKey(email));
 
     const balance = await this.ensureAccount(email);
-    const creditToken = this.jwtLibService.sign(
-      { purpose: CREDIT_TOKEN_PURPOSE, email },
-      { expiresIn: CREDIT_TOKEN_TTL_SECONDS },
-    );
+    await prisma.templateCredit.updateMany({ where: { email, verifiedAt: null }, data: { verifiedAt: new Date() } });
 
-    return { email, balance, creditToken, expiresIn: CREDIT_TOKEN_TTL_SECONDS };
+    return { verified: true, email, balance, creditToken: this.signCreditToken(email), expiresIn: CREDIT_TOKEN_TTL_SECONDS };
   }
 
   // Creates the credit account with the welcome credit the first time an email

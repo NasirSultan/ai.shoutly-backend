@@ -7,7 +7,7 @@ const tx = {
   templateCreditLog: { create: jest.fn() },
 };
 const mockPrisma = {
-  templateCredit: { findUnique: jest.fn(), findUniqueOrThrow: jest.fn(), create: jest.fn(), update: jest.fn() },
+  templateCredit: { findUnique: jest.fn(), findUniqueOrThrow: jest.fn(), create: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
   templateCreditLog: { create: jest.fn() },
   templatePurchase: { findFirst: jest.fn() },
   $transaction: jest.fn((arg) => (typeof arg === 'function' ? arg(tx) : Promise.all(arg))),
@@ -63,6 +63,37 @@ describe('TemplateCreditService', () => {
     const otp = brevo.sendOtpEmail.mock.calls[0][2];
     expect(brevo.sendOtpEmail).toHaveBeenCalledWith('user@example.com', 'user', expect.stringMatching(/^\d{6}$/));
     expect(redis.values.get('template-credit:otp:user@example.com')).toBe(createHash('sha256').update(otp).digest('hex'));
+  });
+
+  it('skips the OTP and returns a creditToken for an already-verified email', async () => {
+    mockPrisma.templateCredit.findUnique.mockResolvedValue({ email: 'v@example.com', balance: 99, verifiedAt: new Date() });
+
+    const res = await service.sendOtp('v@example.com');
+
+    expect(brevo.sendOtpEmail).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ verified: true, message: 'Email already verified', balance: 99, creditToken: 'credit-token' });
+  });
+
+  it('sends an OTP to an email that exists but was never verified (e.g. admin-granted)', async () => {
+    mockPrisma.templateCredit.findUnique.mockResolvedValue({ email: 'g@example.com', balance: 10, verifiedAt: null });
+
+    const res = await service.sendOtp('g@example.com');
+
+    expect(brevo.sendOtpEmail).toHaveBeenCalled();
+    expect(res).toMatchObject({ verified: false, message: 'Verification code sent' });
+  });
+
+  it('marks the email verified after a correct OTP', async () => {
+    await service.sendOtp('m@example.com');
+    const otp = brevo.sendOtpEmail.mock.calls[0][2];
+    mockPrisma.templateCredit.findUnique.mockResolvedValue({ email: 'm@example.com', balance: 0, verifiedAt: null });
+
+    await service.verifyOtp('m@example.com', otp);
+
+    expect(mockPrisma.templateCredit.updateMany).toHaveBeenCalledWith({
+      where: { email: 'm@example.com', verifiedAt: null },
+      data: { verifiedAt: expect.any(Date) },
+    });
   });
 
   it('creates a new account with the welcome credit on first verification', async () => {
