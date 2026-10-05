@@ -25,6 +25,11 @@ model User {
   brandName        String?
   brandLogo        String?
   website          String?
+  // The one website Website Watcher may check for this user (an origin such
+  // as https://mybusiness.com). Copied from `website` on first use, then
+  // locked: only an admin can change it, and editing the profile doesn't.
+  watcherWebsite   String?
+  websiteSnapshots WebsiteSnapshot[]
   primaryColor     String?
   badgeStyle       String?
   textColor        String?
@@ -671,12 +676,24 @@ enum DemoBookingStatus {
   CANCELLED
 }
 
+// Last seen version of a website, per user (Website Watcher). Rows created
+// before checks were per user have no userId and are no longer read.
 model WebsiteSnapshot {
-  id        String   @id @default(uuid())
-  url       String   @unique
-  content   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String    @id @default(uuid())
+  userId        String?
+  user          User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url           String
+  content       String
+  // AI analysis of `content`, reused when the page hasn't changed.
+  summary       String?
+  audience      Json?
+  lastChangedAt DateTime?
+  lastCheckedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([userId, url])
+  @@index([userId])
 }
 
 enum LeadStatus {
