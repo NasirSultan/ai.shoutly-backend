@@ -6,8 +6,7 @@ import { ApplyLogoService } from './apply-logo.service';
 import { TemplateCheckoutDto } from './dto/template-checkout.dto';
 import { getTemplatePrice } from './template-pricing';
 
-// How long the download link stays valid after paying. Matches how long
-// ImgBB keeps the rendered file (IMAGE_EXPIRATION_SECONDS in ApplyLogoService).
+// How long the download link stays valid after paying (matches ApplyLogoService.paidDownloadUrl).
 const PAID_DOWNLOAD_TTL_SECONDS = 24 * 60 * 60;
 
 @Injectable()
@@ -17,18 +16,13 @@ export class TemplatePaymentService {
     private readonly applyLogoService: ApplyLogoService,
   ) {}
 
-  private downloadUrl(renderId: string) {
-    const token = this.applyLogoService.signDownloadToken(renderId, PAID_DOWNLOAD_TTL_SECONDS);
-    return `/api/templates/render/${renderId}/download?token=${token}`;
-  }
-
   // Step 1: create a Razorpay order for one rendered template.
   async checkout(renderId: string, dto: TemplateCheckoutDto) {
     this.applyLogoService.verifyRenderToken(renderId, dto.token);
 
     const alreadyPaid = await prisma.templatePurchase.findFirst({ where: { renderId, status: 'PAID' } });
     if (alreadyPaid) {
-      return { alreadyPaid: true, downloadUrl: this.downloadUrl(renderId) };
+      return { alreadyPaid: true, downloadUrl: this.applyLogoService.paidDownloadUrl(renderId) };
     }
 
     const imageUrl = await this.applyLogoService.getRenderImageUrl(renderId);
@@ -78,6 +72,6 @@ export class TemplatePaymentService {
       });
     }
 
-    return { paid: true, downloadUrl: this.downloadUrl(renderId), expiresIn: PAID_DOWNLOAD_TTL_SECONDS };
+    return { paid: true, downloadUrl: this.applyLogoService.paidDownloadUrl(renderId), expiresIn: PAID_DOWNLOAD_TTL_SECONDS };
   }
 }

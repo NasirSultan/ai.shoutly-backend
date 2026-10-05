@@ -118,6 +118,13 @@ export class ApplyLogoService {
     return this.jwtLibService.sign({ purpose: DOWNLOAD_TOKEN_PURPOSE, renderId }, { expiresIn: expiresInSeconds });
   }
 
+  // Download link handed out once a render is paid for (Razorpay or credit).
+  // Lives as long as ImgBB keeps the rendered file.
+  paidDownloadUrl(renderId: string): string {
+    const token = this.signDownloadToken(renderId, IMAGE_EXPIRATION_SECONDS);
+    return `/api/templates/render/${renderId}/download?token=${token}`;
+  }
+
   verifyRenderToken(renderId: string, token: string): void {
     if (!token) throw new ForbiddenException('Missing token');
 

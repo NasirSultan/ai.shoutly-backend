@@ -240,7 +240,7 @@ export class PaymentService {
   private async handleTemplateWebhook(
     eventName: string,
     entity: any,
-    purchase: { id: string; amount: number; currency: string },
+    purchase: { id: string; amount: number; currency: string | null },
   ) {
     switch (eventName) {
       case "payment.captured":

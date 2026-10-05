@@ -9,11 +9,22 @@ import { ImgbbService } from '../lib/imgbb/imgbb.service';
 import { JwtLibModule } from '../lib/jwt/jwt.module';
 import { RedisModule } from '../common/redis/redis.module';
 import { SubscriptionModule } from '../subscription/subscription.module';
+import { BrevoModule } from '../brevo/brevo.module';
+import { AuditLogModule } from '../audit-log/audit-log.module';
 import { TemplatePaymentService } from './template-payment.service';
+import { TemplateCreditController } from './template-credit.controller';
+import { TemplateCreditService } from './template-credit.service';
 
 @Module({
-  imports: [JwtLibModule, RedisModule, SubscriptionModule],
-  controllers: [LogoUploadController, TemplateUploadController, ApplyLogoController],
-  providers: [LogoUploadService, TemplateUploadService, ApplyLogoService, TemplatePaymentService, ImgbbService],
+  imports: [JwtLibModule, RedisModule, SubscriptionModule, BrevoModule, AuditLogModule],
+  controllers: [LogoUploadController, TemplateUploadController, ApplyLogoController, TemplateCreditController],
+  providers: [
+    LogoUploadService,
+    TemplateUploadService,
+    ApplyLogoService,
+    TemplatePaymentService,
+    TemplateCreditService,
+    ImgbbService,
+  ],
 })
 export class LogoOverlayModule {}
