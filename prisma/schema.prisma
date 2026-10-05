@@ -318,22 +318,59 @@ model Payment {
   @@index([userId])
 }
 
-// One row per "pay to download this template" Razorpay order. No login is
-// needed for templates, so this is keyed by the render, not a user.
+enum TemplatePaymentMethod {
+  RAZORPAY
+  CREDIT
+}
+
+// One row per unlocked (or being-paid-for) template render. No login is
+// needed for templates, so this is keyed by the render, not a user. Paid
+// either through a Razorpay order or by spending one template credit.
 model TemplatePurchase {
-  id                String        @id @default(uuid())
+  id                String                @id @default(uuid())
   renderId          String
   imageUrl          String
-  razorpayOrderId   String        @unique
-  razorpayPaymentId String?       @unique
+  paidWith          TemplatePaymentMethod @default(RAZORPAY)
+  email             String?
+  razorpayOrderId   String?               @unique
+  razorpayPaymentId String?               @unique
   amount            Float
-  currency          Currency
-  status            PaymentStatus @default(CREATED)
+  currency          Currency?
+  status            PaymentStatus         @default(CREATED)
   paidAt            DateTime?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
 
   @@index([renderId])
+}
+
+enum TemplateCreditReason {
+  WELCOME
+  ADMIN_GRANT
+  TEMPLATE_USE
+}
+
+// Template credits per email (proven by an email OTP). 1 credit unlocks one
+// template download; at 0 the user pays per template through Razorpay.
+model TemplateCredit {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  balance   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Every change to a TemplateCredit balance, for auditing.
+model TemplateCreditLog {
+  id        String               @id @default(uuid())
+  email     String
+  change    Int
+  reason    TemplateCreditReason
+  renderId  String?
+  adminId   String?
+  createdAt DateTime             @default(now())
+
+  @@index([email])
 }
 
 model CalendarPost {

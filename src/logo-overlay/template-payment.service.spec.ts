@@ -12,7 +12,7 @@ import { TemplatePaymentService } from './template-payment.service';
 describe('TemplatePaymentService', () => {
   let service: TemplatePaymentService;
   let paymentService: { createRazorpayOrder: jest.Mock; confirmCapturedPayment: jest.Mock };
-  let applyLogoService: { verifyRenderToken: jest.Mock; getRenderImageUrl: jest.Mock; signDownloadToken: jest.Mock };
+  let applyLogoService: { verifyRenderToken: jest.Mock; getRenderImageUrl: jest.Mock; paidDownloadUrl: jest.Mock };
 
   const verifyDto = {
     razorpay_order_id: 'order_t1',
@@ -26,7 +26,7 @@ describe('TemplatePaymentService', () => {
     applyLogoService = {
       verifyRenderToken: jest.fn(),
       getRenderImageUrl: jest.fn().mockResolvedValue('https://i.ibb.co/x.png'),
-      signDownloadToken: jest.fn().mockReturnValue('paid-token'),
+      paidDownloadUrl: jest.fn((id: string) => `/api/templates/render/${id}/download?token=paid-token`),
     };
     service = new TemplatePaymentService(paymentService as any, applyLogoService as any);
   });
