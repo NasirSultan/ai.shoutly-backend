@@ -29,7 +29,7 @@ const TAVILY_EXTRACT_URL = 'https://api.tavily.com/extract'
 const CHAT_MODEL = 'deepseek-chat'
 const CONTENT_CHAR_LIMIT = 8000
 // Successful checks per user per UTC day. Admins have no limit.
-const DAILY_CHECK_LIMIT = 5
+const DAILY_CHECK_LIMIT = 1
 
 const deepseek = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
@@ -90,7 +90,9 @@ export class WebsiteWatcherService {
 
     if (!isAdmin && (await this.checksLeftToday(user.id)) === 0) {
       throw new HttpException(
-        `You've used all ${DAILY_CHECK_LIMIT} website checks for today. Try again tomorrow.`,
+        DAILY_CHECK_LIMIT === 1
+          ? "You've already checked your website today. Try again tomorrow."
+          : `You've used all ${DAILY_CHECK_LIMIT} website checks for today. Try again tomorrow.`,
         HttpStatus.TOO_MANY_REQUESTS,
       )
     }
