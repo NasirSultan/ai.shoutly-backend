@@ -121,9 +121,8 @@
 
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { Worker, Job } from 'bullmq'
+import { EventEmitter2 } from '@nestjs/event-emitter'
 import { RedisService } from '../common/redis/redis.service'
-import { BrevoService } from '../brevo/brevo.service'
-import { DateTime } from 'luxon'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
 import { normalizeTimezone } from '../common/utils/timezone.util'
@@ -169,15 +168,22 @@ export class PostWorker implements OnModuleInit {
       console.error(`[Outstand Worker] Job ${job?.id} structural processing failed:`, err.message)
 
       if (job && job.attemptsMade >= (job.opts.attempts || 3)) {
-        await prisma.calendarPost.update({
-          where: { id: job.data.calendarPostId },
+        // Only a post still in flight can fail. Matching on POSTING means a
+        // stray duplicate job can never overwrite a post that another job
+        // already published (POSTED) or that was skipped (SKIP).
+        await prisma.calendarPost.updateMany({
+          where: { id: job.data.calendarPostId, status: 'POSTING' },
           data: { status: 'FAILED' },
         })
+        // Final failure only (not each retry). The watchdog also emails an
+        // alert for posts that became FAILED.
+        captureError(err, 'publish-worker', { postId: job.data.calendarPostId, jobId: job.id, attempts: job.attemptsMade })
       }
     })
-    
+
     this.worker.on('error', (err) => {
       console.error('❌ Worker Error:', err)
+      captureError(err, 'publish-worker')
     })
     } catch (err) {
       console.error('[PostWorker] FAILED TO START WORKER:', err) // ← ADD THIS
@@ -230,8 +236,18 @@ export class PostWorker implements OnModuleInit {
       },
     })
 
-    if (!post) throw new Error(`Post ${calendarPostId} not found`)
-    if (post.status !== 'POSTING') throw new Error(`Post ${calendarPostId} already handled: ${post.status}`)
+    // A post that's gone or no longer POSTING was already handled (e.g. a
+    // duplicate job for a post another job just published). That's not a
+    // failure: finish quietly instead of throwing, so BullMQ doesn't retry it
+    // and the failed handler never touches the post's status.
+    if (!post) {
+      console.warn(`[Outstand Worker] Post ${calendarPostId} no longer exists — skipping.`)
+      return { skipped: true, reason: 'not-found' }
+    }
+    if (post.status !== 'POSTING') {
+      console.warn(`[Outstand Worker] Post ${calendarPostId} already handled (${post.status}) — skipping duplicate job.`)
+      return { skipped: true, reason: `already-${post.status.toLowerCase()}` }
+    }
 
     const { user } = post
     const targetPlatforms = post.targetPlatforms ?? []
@@ -300,7 +316,9 @@ export class PostWorker implements OnModuleInit {
         data: { status: 'POSTED' },
       })
 
-      // 6. Push transactional status confirmation email to user via Brevo
+      // 6. Announce the publish — decoupled from sending the notification
+      // email itself. Fire-and-forget: publishing succeeded regardless of
+      // whether the email later succeeds, so this doesn't await anything.
       if (user.email) {
         const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
         const postedAt = DateTime.now().setZone(tz).toFormat("MMM dd, yyyy 'at' hh:mm a")
@@ -326,6 +344,9 @@ export class PostWorker implements OnModuleInit {
       return responseData
 
     } catch (error) {
+      // Any failed request to Outstand (rejected or unreachable) counts toward
+      // the "outstand errors" alert.
+      if (axios.isAxiosError(error)) void this.monitoring.recordServiceError('outstand')
       if (axios.isAxiosError(error) && error.response) {
         console.error('--- OUTSTAND CRITICAL REMOTE EXCEPTION ---')
         console.error(JSON.stringify(error.response.data, null, 2))

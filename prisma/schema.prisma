@@ -25,6 +25,11 @@ model User {
   brandName        String?
   brandLogo        String?
   website          String?
+  // The one website Website Watcher may check for this user (an origin such
+  // as https://mybusiness.com). Copied from `website` on first use, then
+  // locked: only an admin can change it, and editing the profile doesn't.
+  watcherWebsite   String?
+  websiteSnapshots WebsiteSnapshot[]
   primaryColor     String?
   badgeStyle       String?
   textColor        String?
@@ -44,6 +49,7 @@ model User {
   twoFactorSecret  String?
   twoFactorEnabled Boolean          @default(false)
   subscriptions    Subscription[]
+  payments         Payment[]
   connectedSocials SocialPlatform[] @default([])
   jobTitle         String?
   industryId       String?
@@ -108,7 +114,9 @@ enum LogoPosition {
 
 enum Plan {
   STARTER
-  GROWTH
+  GROWTH // legacy: the old single plan, no longer sold; existing subscribers keep it
+  BUSINESS
+  AUTOPILOT
 }
 
 enum Billing {
@@ -278,10 +286,98 @@ model Subscription {
   startedAt DateTime  @default(now())
   expiresAt DateTime?
   isActive  Boolean   @default(true)
+  payment   Payment?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 
   @@index([userId])
+}
+
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+}
+
+// One row per Razorpay order. The subscription is only created once the
+// payment is verified (checkout signature or webhook), and subscriptionId
+// being set is what makes activation idempotent across both paths.
+model Payment {
+  id                String        @id @default(uuid())
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?       @unique
+  plan              Plan          @default(GROWTH)
+  billing           Billing
+  currency          Currency
+  amount            Float
+  status            PaymentStatus @default(CREATED)
+  failureReason     String?
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  subscriptionId    String?       @unique
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@index([userId])
+}
+
+enum TemplatePaymentMethod {
+  RAZORPAY
+  CREDIT
+}
+
+// One row per unlocked (or being-paid-for) template render. No login is
+// needed for templates, so this is keyed by the render, not a user. Paid
+// either through a Razorpay order or by spending one template credit.
+model TemplatePurchase {
+  id                String                @id @default(uuid())
+  renderId          String
+  imageUrl          String
+  paidWith          TemplatePaymentMethod @default(RAZORPAY)
+  email             String?
+  razorpayOrderId   String?               @unique
+  razorpayPaymentId String?               @unique
+  amount            Float
+  currency          Currency?
+  status            PaymentStatus         @default(CREATED)
+  paidAt            DateTime?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+
+  @@index([renderId])
+}
+
+enum TemplateCreditReason {
+  WELCOME
+  ADMIN_GRANT
+  TEMPLATE_USE
+}
+
+// Template credits per email (proven by an email OTP). 1 credit unlocks one
+// template download; at 0 the user pays per template through Razorpay.
+model TemplateCredit {
+  id        String   @id @default(uuid())
+  email      String    @unique
+  balance    Int       @default(0)
+  // Set the first time the email passes OTP; after that send-otp skips the code.
+  verifiedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Every change to a TemplateCredit balance, for auditing.
+model TemplateCreditLog {
+  id        String               @id @default(uuid())
+  email     String
+  change    Int
+  reason    TemplateCreditReason
+  renderId  String?
+  adminId   String?
+  createdAt DateTime             @default(now())
+
+  @@index([email])
 }
 
 model CalendarPost {
@@ -410,6 +506,41 @@ model ContactForm {
   status    ContactStatus @default(PENDING)
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
+}
+
+// "Send us a message" form on /contact-us (POST /api/contact). Replaces
+// ContactForm, which is kept only so existing rows aren't dropped.
+enum ContactInquiryType {
+  sales
+  support
+  partner
+  press
+}
+
+enum ContactMessageStatus {
+  new
+  in_progress
+  resolved
+}
+
+model ContactMessage {
+  id          String               @id @default(uuid())
+  // Source of the human-readable reference (SH-<year>-<seq padded to 6>).
+  seq         Int                  @unique @default(autoincrement())
+  reference   String?              @unique
+  inquiryType ContactInquiryType   @map("inquiry_type")
+  name        String
+  email       String
+  phone       String?
+  detail      String
+  message     String
+  status      ContactMessageStatus @default(new)
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("contact_messages")
 }
 
 model Festival {
@@ -545,12 +676,24 @@ enum DemoBookingStatus {
   CANCELLED
 }
 
+// Last seen version of a website, per user (Website Watcher). Rows created
+// before checks were per user have no userId and are no longer read.
 model WebsiteSnapshot {
-  id        String   @id @default(uuid())
-  url       String   @unique
-  content   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String    @id @default(uuid())
+  userId        String?
+  user          User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  url           String
+  content       String
+  // AI analysis of `content`, reused when the page hasn't changed.
+  summary       String?
+  audience      Json?
+  lastChangedAt DateTime?
+  lastCheckedAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([userId, url])
+  @@index([userId])
 }
 
 enum LeadStatus {

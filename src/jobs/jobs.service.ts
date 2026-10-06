@@ -4,12 +4,16 @@ import { DateTime } from 'luxon'
 import { PostQueue } from './post.queue'
 import { prisma } from '../lib/prisma'
 import { normalizeTimezone } from '../common/utils/timezone.util'
+import { MonitoringService } from '../monitoring/monitoring.service'
 const BATCH_SIZE = 10
 
 @Injectable()
 export class JobsService {  // ← Add implements OnModuleInit
 
-  constructor(private readonly postQueue: PostQueue) {}
+  constructor(
+    private readonly postQueue: PostQueue,
+    private readonly monitoring: MonitoringService,
+  ) {}
 
   // ✅ Runs once automatically on server start — DELETE after one deploy
 
@@ -85,5 +89,8 @@ export class JobsService {  // ← Add implements OnModuleInit
     if (totalEnqueued > 0 || totalMissed > 0) {
       console.log(`[Scheduler] Done. Total enqueued: ${totalEnqueued} | Total missed: ${totalMissed}`)
     }
+
+    // Reached only when the run finished without throwing.
+    void this.monitoring.heartbeat('checkDuePosts')
   }
 }

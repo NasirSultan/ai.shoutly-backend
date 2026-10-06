@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import  {CalendarModule } from './calendar/calendar.module';
@@ -31,6 +34,8 @@ import { BookDemoModule } from './book-demo/book-demo.module'
 import { CalendarificModule } from './calendarific/calendarific.module'
 import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
 import { MetaModule } from './meta/meta.module'
+import { MonitoringCoreModule } from './monitoring/monitoring-core.module'
+import { MonitoringModule } from './monitoring/monitoring.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }),LogoOverlayModule, FacebookModule, LinkedInModule, IndustriesModule, AuthModule,
@@ -60,8 +65,14 @@ import { MetaModule } from './meta/meta.module'
   CalendarificModule,
   WebsiteWatcherModule,
   MetaModule,
+  MonitoringModule,
 ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Reports unexpected (non-HTTP) errors to Sentry, then responds exactly
+    // like Nest's default handler. Intentional 4xx/5xx HttpExceptions are not reported.
+    { provide: APP_FILTER, useClass: SentryGlobalFilter },
+  ],
 })
 export class AppModule {}

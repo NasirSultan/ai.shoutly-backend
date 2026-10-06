@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
+import { ForbiddenException, HttpException, HttpStatus, Injectable, InternalServerErrorException, UnprocessableEntityException } from '@nestjs/common';
 import sharp from 'sharp';
 import fetch from 'node-fetch';
 import { randomUUID } from 'crypto';
@@ -7,6 +7,8 @@ import { ApplyLogoDto } from './dto/apply-logo.dto';
 import { ImgbbService } from '../lib/imgbb/imgbb.service';
 import { JwtLibService } from '../lib/jwt/jwt.service';
 import { RedisService } from '../common/redis/redis.service';
+import { prisma } from '../lib/prisma';
+import { TEMPLATE_PRICE } from './template-pricing';
 
 const CANVAS = 500;
 const MARGIN = 16;
@@ -40,7 +42,7 @@ export class ApplyLogoService {
     downloadToken: string;
     expiresIn: number;
     previewUrl: string;
-    downloadUrl: string;
+    price: Record<string, number>;
     width: number;
     height: number;
     createdAt: string;
@@ -92,17 +94,16 @@ export class ApplyLogoService {
         .getClient()
         .set(this.renderKey(renderId), imageUrl, { EX: DOWNLOAD_TOKEN_TTL_SECONDS });
 
-      const downloadToken = this.jwtLibService.sign(
-        { purpose: DOWNLOAD_TOKEN_PURPOSE, renderId },
-        { expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS }
-      );
+      const downloadToken = this.signDownloadToken(renderId, DOWNLOAD_TOKEN_TTL_SECONDS);
 
+      // The preview is watermarked and the full-quality download is only
+      // unlocked by paying for this render (see TemplatePaymentService).
       return {
         renderId,
         downloadToken,
         expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS,
         previewUrl: `/api/templates/render/${renderId}?token=${downloadToken}`,
-        downloadUrl: `/api/templates/render/${renderId}/download?token=${downloadToken}`,
+        price: TEMPLATE_PRICE,
         width: CANVAS,
         height: CANVAS,
         createdAt: new Date().toISOString(),
@@ -113,7 +114,18 @@ export class ApplyLogoService {
     }
   }
 
-  async streamRender(renderId: string, token: string, asAttachment: boolean, res: Response): Promise<void> {
+  signDownloadToken(renderId: string, expiresInSeconds: number): string {
+    return this.jwtLibService.sign({ purpose: DOWNLOAD_TOKEN_PURPOSE, renderId }, { expiresIn: expiresInSeconds });
+  }
+
+  // Download link handed out once a render is paid for (Razorpay or credit).
+  // Lives as long as ImgBB keeps the rendered file.
+  paidDownloadUrl(renderId: string): string {
+    const token = this.signDownloadToken(renderId, IMAGE_EXPIRATION_SECONDS);
+    return `/api/templates/render/${renderId}/download?token=${token}`;
+  }
+
+  verifyRenderToken(renderId: string, token: string): void {
     if (!token) throw new ForbiddenException('Missing token');
 
     let payload: { purpose?: string; renderId?: string };
@@ -126,17 +138,50 @@ export class ApplyLogoService {
     if (payload.purpose !== DOWNLOAD_TOKEN_PURPOSE || payload.renderId !== renderId) {
       throw new ForbiddenException('Token does not match this render');
     }
+  }
 
-    const imageUrl = await this.redisService.getClient().get(this.renderKey(renderId));
-    if (!imageUrl) throw new ForbiddenException('Render expired or not found');
+  async getRenderImageUrl(renderId: string): Promise<string | null> {
+    return this.redisService.getClient().get(this.renderKey(renderId));
+  }
 
-    const buffer = await this.fetchAsBuffer(imageUrl);
+  async streamRender(renderId: string, token: string, asAttachment: boolean, res: Response): Promise<void> {
+    this.verifyRenderToken(renderId, token);
+
+    const purchase = await prisma.templatePurchase.findFirst({ where: { renderId, status: 'PAID' } });
+
+    let buffer: Buffer;
+    if (asAttachment) {
+      if (!purchase) throw new HttpException('Payment required to download this template', HttpStatus.PAYMENT_REQUIRED);
+      // Served from the purchase so the download keeps working after the
+      // short-lived Redis render key has expired.
+      buffer = await this.fetchAsBuffer(purchase.imageUrl);
+    } else {
+      const imageUrl = purchase?.imageUrl ?? (await this.getRenderImageUrl(renderId));
+      if (!imageUrl) throw new ForbiddenException('Render expired or not found');
+      buffer = await this.fetchAsBuffer(imageUrl);
+      if (!purchase) buffer = await this.watermark(buffer);
+    }
 
     res.setHeader('Content-Type', 'image/png');
     if (asAttachment) {
       res.setHeader('Content-Disposition', `attachment; filename="${renderId}.png"`);
     }
     res.send(buffer);
+  }
+
+  // Unpaid previews get a repeated diagonal "PREVIEW" mark so the image
+  // can't simply be saved from the preview instead of paying.
+  private async watermark(buf: Buffer): Promise<Buffer> {
+    const { width = CANVAS, height = CANVAS } = await sharp(buf).metadata();
+    const rows = Array.from({ length: 6 }, (_, i) => {
+      const y = Math.round(((i + 0.5) * height) / 6);
+      return `<text x="50%" y="${y}" text-anchor="middle" dominant-baseline="middle">PREVIEW · SHOUTLY AI · PREVIEW</text>`;
+    }).join('');
+    const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <g transform="rotate(-30 ${width / 2} ${height / 2})" font-family="Arial, sans-serif" font-size="${Math.round(width / 18)}"
+         font-weight="700" fill="white" fill-opacity="0.35" stroke="black" stroke-opacity="0.15" stroke-width="1">${rows}</g>
+    </svg>`;
+    return sharp(buf).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toBuffer();
   }
 
   private renderKey(renderId: string): string {

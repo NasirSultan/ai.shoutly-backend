@@ -1,12 +1,16 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import * as Brevo from '@sendinblue/client'
+import { MonitoringService } from '../monitoring/monitoring.service'
 
 @Injectable()
 export class BrevoService {
   private apiInstance: Brevo.TransactionalEmailsApi
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    private readonly monitoring: MonitoringService,
+  ) {
     this.apiInstance = new Brevo.TransactionalEmailsApi()
 
     const apiKey = this.configService.get<string>('BREVO_API_KEY')
@@ -19,6 +23,36 @@ export class BrevoService {
     }
   }
 
+  // Every email goes through here so failed sends are counted for monitoring
+  // (e.g. Brevo rejecting the server's IP). Errors are still thrown to the caller.
+  private async send(email: Brevo.SendSmtpEmail) {
+    try {
+      return await this.apiInstance.sendTransacEmail(email)
+    } catch (err) {
+      void this.monitoring.recordServiceError('brevo')
+      throw err
+    }
+  }
+
+  // Plain (non-template) email, used for system alerts. Callers must escape
+  // any user text in htmlContent.
+  async sendHtmlEmail(options: { to: { email: string; name?: string }; subject: string; htmlContent: string; textContent: string }) {
+    const senderEmail = this.configService.get<string>('BREVO_SENDER_EMAIL')
+    const senderName = this.configService.get<string>('BREVO_SENDER_NAME')
+
+    if (!senderEmail || !senderName) {
+      throw new Error('Brevo sender config missing')
+    }
+
+    await this.send({
+      sender: { email: senderEmail, name: senderName },
+      to: [options.to],
+      subject: options.subject,
+      htmlContent: options.htmlContent,
+      textContent: options.textContent,
+    })
+  }
+
   async sendOtpEmail(toEmail: string, name: string, otp: string) {
     const senderEmail = this.configService.get<string>('BREVO_SENDER_EMAIL')
     const senderName = this.configService.get<string>('BREVO_SENDER_NAME')
@@ -29,7 +63,7 @@ export class BrevoService {
 
     const digits = otp.split('')
 
-    await this.apiInstance.sendTransacEmail({
+    await this.send({
       sender: {
         email: senderEmail,
         name: senderName
@@ -61,7 +95,7 @@ export class BrevoService {
     throw new Error('Brevo sender config missing')
   }
 
-  await this.apiInstance.sendTransacEmail({
+  await this.send({
     sender: {
       email: senderEmail,
       name: senderName,
@@ -85,7 +119,7 @@ async sendWelcomeEmail(toEmail: string, name: string) {
     throw new Error('Brevo sender config missing')
   }
 
-  await this.apiInstance.sendTransacEmail({
+  await this.send({
     sender: { email: senderEmail, name: senderName },
     to: [{ email: toEmail, name }],
     subject: 'Welcome to Shoutly AI!',
@@ -119,7 +153,7 @@ async sendOnboardingStepEmail(step: number, toEmail: string, name: string) {
     throw new Error(`Unknown onboarding step: ${step}`)
   }
 
-  await this.apiInstance.sendTransacEmail({
+  await this.send({
     sender: { email: senderEmail, name: senderName },
     to: [{ email: toEmail, name }],
     subject: config.subject,

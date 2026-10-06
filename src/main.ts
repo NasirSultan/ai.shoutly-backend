@@ -1,8 +1,11 @@
+import './instrumentation'
 import { NestFactory } from '@nestjs/core'
 import { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module'
 import * as path from 'path'
 import dotenv from 'dotenv'
+import { langfuseSpanProcessor } from './instrumentation'
+import { corsOptionsDelegate } from './common/cors.config'
 dotenv.config()
 
 async function bootstrap() {
@@ -10,11 +13,7 @@ async function bootstrap() {
   app.useStaticAssets(path.join(__dirname, '..', 'public'))
   app.setGlobalPrefix('api')
 
-  app.enableCors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    credentials: true
-  })
+  app.enableCors(corsOptionsDelegate)
 
   const port = process.env.PORT || 3000
 
@@ -23,7 +22,15 @@ async function bootstrap() {
   server.keepAliveTimeout = 300000
 
   console.log(`Server is running on port ${port}`)
-  console.log(`Health check available at http://localhost:${port}/health`)
+  console.log(`Health check available at http://localhost:${port}/api/health`)
+
+  const flushLangfuseAndExit = async () => {
+    await langfuseSpanProcessor.forceFlush().catch(() => undefined)
+    process.exit(0)
+  }
+
+  process.on('SIGTERM', flushLangfuseAndExit)
+  process.on('SIGINT', flushLangfuseAndExit)
 }
 
 bootstrap()

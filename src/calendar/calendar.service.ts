@@ -637,7 +637,7 @@ async getPostDetails(userId: string, postId: string) {
       return { success: false, message: 'Post not found or unauthorized' }
     }
 
-    if (post.status !== 'SCHEDULED') {
+    if (post.status !== 'SCHEDULED' && post.status !== 'FAILED') {
       return {
         success: false,
         message: `Post cannot be published from status ${post.status}`,
@@ -645,7 +645,7 @@ async getPostDetails(userId: string, postId: string) {
     }
 
     const locked = await prisma.calendarPost.updateMany({
-      where: { id: postId, status: 'SCHEDULED' },
+      where: { id: postId, status: { in: ['SCHEDULED', 'FAILED'] } },
       data: { status: 'POSTING' },
     })
 

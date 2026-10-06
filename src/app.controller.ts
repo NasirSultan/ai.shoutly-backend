@@ -1,6 +1,8 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AppService } from './app.service';
 import { prisma } from './lib/prisma';
+import { AuthGuard } from './common/guards/auth.guard';
+import { RolesGuard } from './common/guards/roles.guard';
 
 @Controller()
 export class AppController {
@@ -16,7 +18,10 @@ export class AppController {
     return this.appService.getHello();
   }
 
-  @Get('seed-industries')
+  // Writes to the database, so it's admin-only and a POST (it used to be a
+  // public GET that anyone could call).
+  @Post('seed-industries')
+  @UseGuards(AuthGuard, new RolesGuard(['SUPERADMIN']))
   async seedIndustries() {
     const industries = [
       { name: 'Fashion' }, 
