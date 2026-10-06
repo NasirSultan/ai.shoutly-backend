@@ -8,6 +8,7 @@ import { prisma } from '../lib/prisma';
 import { Express } from 'express';
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { RedisService } from '../common/redis/redis.service';
+import { LinkedInService } from '../social-media/linkedin/linkedin.service';
 
 // Generic, publicly-documented social-media-marketing benchmark posting
 // windows per platform — NOT computed from any individual user's own data.
@@ -58,7 +59,10 @@ export class AutopostService {
     return normalized;
   }
   
-  constructor(private readonly redisService: RedisService) {
+  constructor(
+    private readonly redisService: RedisService,
+    private readonly linkedInService: LinkedInService,
+  ) {
     if (!this.outstandApiKey) {
       console.warn('Warning: OUTSTAND_API_KEY is not defined in your environment variables.');
     }
@@ -467,14 +471,30 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file — pass its URL in mediaUrls.');
     }
 
-    const verifiedAccounts = await this.prisma.socialAccount.findMany({
-      where: {
-        userId,
-        platform: { in: platforms },
-      },
-    });
+    const wantsLinkedIn = platforms.includes('LINKEDIN');
+    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN');
 
-    if (!verifiedAccounts.length) {
+    const verifiedAccounts = outstandPlatforms.length
+      ? await this.prisma.socialAccount.findMany({
+          where: {
+            userId,
+            platform: { in: outstandPlatforms },
+          },
+        })
+      : [];
+
+    const linkedInAccount = wantsLinkedIn
+      ? await this.prisma.linkedAccount.findFirst({
+          where: { userId, platform: 'LINKEDIN' },
+          orderBy: { createdAt: 'desc' },
+        })
+      : null;
+
+    if (wantsLinkedIn && !linkedInAccount) {
+      throw new BadRequestException('Connect your LinkedIn profile before posting to LinkedIn.');
+    }
+
+    if (!linkedInAccount && !verifiedAccounts.length) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
@@ -516,41 +536,51 @@ export class AutopostService {
       }));
     }
 
-    // 4. Fire to Outstand
+    // 4. LinkedIn goes to the member API. Outstand still receives every other account.
     try {
-      const response = await axios.post(
-        `${this.outstandBaseUrl.trim()}/posts/`,
-        {
-          accounts: outstandAccountIds,
-          containers: [container],
-          ...(dto.youtube ? { youtube: dto.youtube } : {}),
-          ...(effectivePinterest
-            ? {
-                pinterest: {
-                  board_id: effectivePinterest.boardId,
-                  ...(effectivePinterest.link ? { link: effectivePinterest.link } : {}),
-                  ...(effectivePinterest.title ? { title: effectivePinterest.title } : {}),
-                  ...(effectivePinterest.altText ? { alt_text: effectivePinterest.altText } : {}),
-                },
-              }
-            : {}),
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.outstandApiKey.trim()}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          },
-        }
-      );
+      if (linkedInAccount) {
+        const mediaUrl = dto.mediaUrls?.[0];
+        await this.linkedInService.publish({
+          accessToken: linkedInAccount.accessToken,
+          personId: linkedInAccount.platformUserId,
+          commentary: dto.content,
+          mediaUrl,
+          video: !!mediaUrl && mediaUrl.split('?')[0].toLowerCase().endsWith('.mp4'),
+        });
+      }
 
-      const outstandResult = response.data;
-      // Outstand's create-post response has been observed under different
-      // keys depending on the call shape (schedule uses `post`, this one
-      // was written expecting `data`) — try each so outstandPostId actually
-      // gets captured instead of silently staying null.
-      const outstandPostId = outstandResult.data?.id ?? outstandResult.post?.id ?? outstandResult.id;
+      let outstandPostId: string | null = null;
+      if (outstandAccountIds.length) {
+        const response = await axios.post(
+          `${this.outstandBaseUrl.trim()}/posts/`,
+          {
+            accounts: outstandAccountIds,
+            containers: [container],
+            ...(dto.youtube ? { youtube: dto.youtube } : {}),
+            ...(effectivePinterest
+              ? {
+                  pinterest: {
+                    board_id: effectivePinterest.boardId,
+                    ...(effectivePinterest.link ? { link: effectivePinterest.link } : {}),
+                    ...(effectivePinterest.title ? { title: effectivePinterest.title } : {}),
+                    ...(effectivePinterest.altText ? { alt_text: effectivePinterest.altText } : {}),
+                  },
+                }
+              : {}),
+          },
+          {
+            headers: {
+              'Authorization': `Bearer ${this.outstandApiKey.trim()}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            },
+          }
+        );
+
+        const outstandResult = response.data;
+        outstandPostId = outstandResult.data?.id ?? outstandResult.post?.id ?? outstandResult.id;
+      }
 
       await this.prisma.post.update({
         where: { id: postRecord.id },
@@ -580,6 +610,11 @@ export class AutopostService {
         );
       }
 
+      await this.prisma.post.update({
+        where: { id: postRecord.id },
+        data: { status: 'FAILED' },
+      });
+
       if (error instanceof BadRequestException) throw error;
       throw new InternalServerErrorException('Immediate post dispatch failed inside engine processes');
     }
@@ -595,10 +630,15 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
     }
 
+    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN');
+    if (!outstandPlatforms.length) {
+      return { success: true, scheduled: [], failed: [] };
+    }
+
     const verifiedAccounts = await this.prisma.socialAccount.findMany({
       where: {
         userId,
-        platform: { in: platforms },
+        platform: { in: outstandPlatforms },
       },
     });
 
@@ -612,7 +652,7 @@ export class AutopostService {
     // post can still override with its own pinterest.boardId if it wants a
     // different board than the account's default.
     const pinterestAccount = verifiedAccounts.find((a) => a.platform === 'PINTEREST');
-    if (platforms.includes('PINTEREST') && !pinterestAccount?.defaultBoardId
+    if (outstandPlatforms.includes('PINTEREST') && !pinterestAccount?.defaultBoardId
         && dto.posts.some((p) => !p.pinterest?.boardId)) {
       throw new BadRequestException(
         'Pinterest requires a board for every scheduled post — pass pinterest.boardId, or select/create a default board first via POST /autopost/accounts/:id/pinterest/default-board.',

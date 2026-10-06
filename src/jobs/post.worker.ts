@@ -125,9 +125,9 @@ import { EventEmitter2 } from '@nestjs/event-emitter'
 import { RedisService } from '../common/redis/redis.service'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
-import { PostPublishedEvent } from '../events/post-published.event'
-import { MonitoringService } from '../monitoring/monitoring.service'
-import { captureError } from '../monitoring/sentry'
+import { normalizeTimezone } from '../common/utils/timezone.util'
+import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
+import { LinkedInService } from '../social-media/linkedin/linkedin.service'
 
 interface PublishJobData {
   calendarPostId: string
@@ -143,8 +143,8 @@ export class PostWorker implements OnModuleInit {
 
   constructor(
     private readonly redisService: RedisService,
-    private readonly eventEmitter: EventEmitter2,
-    private readonly monitoring: MonitoringService,
+    private readonly brevoService: BrevoService,
+    private readonly linkedInService: LinkedInService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
   }
@@ -225,7 +225,10 @@ export class PostWorker implements OnModuleInit {
       where: { id: calendarPostId },
       include: {
         user: {
-          include: { socialAccounts: { where: { status: 'active' } } }
+          include: {
+            socialAccounts: { where: { status: 'active' } },
+            linkedAccounts: { where: { platform: 'LINKEDIN' } },
+          },
         },
         content: true,
         image: true,
@@ -252,12 +255,13 @@ export class PostWorker implements OnModuleInit {
       if (!targetPlatforms.length) return true
       return targetPlatforms.includes(acc.platform)
     })
+    const wantsLinkedIn = !targetPlatforms.length || targetPlatforms.includes('LINKEDIN')
+    const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
 
-    if (!activeAccounts.length) {
-      throw new Error(`User ${user.id} has no connected Outstand channels for the selected platforms`)
+    if (!activeAccounts.length && !linkedInAccount) {
+      throw new Error(`User ${user.id} has no connected channels for the selected platforms`)
     }
 
-    // 2. Map structural Outstand profile IDs array
     const outstandAccountIds = activeAccounts.map((acc) => acc.outstandAccountId)
 
     // 3. Construct unified container asset payload
@@ -276,22 +280,35 @@ export class PostWorker implements OnModuleInit {
       }]
     }
 
-    // 4. Dispatch transaction payload directly to Outstand engine endpoint
     try {
-      const response = await axios.post(
-        `${this.outstandBaseUrl}/posts/`,
-        {
-          accounts: outstandAccountIds, // Sends to all active accounts at once (Facebook & Instagram)
-          containers: [container],
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${this.outstandApiKey}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
+      if (linkedInAccount) {
+        await this.linkedInService.publish({
+          accessToken: linkedInAccount.accessToken,
+          personId: linkedInAccount.platformUserId,
+          commentary: container.content,
+          mediaUrl,
+          video: !!mediaUrl && (mediaUrl.split('?')[0].toLowerCase().endsWith('.mp4') || !!post.reel),
+        })
+      }
+
+      let responseData: unknown = null
+      if (outstandAccountIds.length) {
+        const response = await axios.post(
+          `${this.outstandBaseUrl}/posts/`,
+          {
+            accounts: outstandAccountIds,
+            containers: [container],
           },
-        }
-      )
+          {
+            headers: {
+              'Authorization': `Bearer ${this.outstandApiKey}`,
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+          }
+        )
+        responseData = response.data
+      }
 
       // 5. Explicitly flip state tracking status flags to POSTED upon remote delivery completion
       await prisma.calendarPost.update({
@@ -303,22 +320,28 @@ export class PostWorker implements OnModuleInit {
       // email itself. Fire-and-forget: publishing succeeded regardless of
       // whether the email later succeeds, so this doesn't await anything.
       if (user.email) {
-        this.eventEmitter.emit(
-          'post.published',
-          new PostPublishedEvent(
-            user.email,
-            user.name || 'Creator',
-            activeAccounts.map((acc) => ({
-              platform: acc.platform || 'Unknown',
-              accountName: acc.username || acc.platform || 'Connected account',
-            })),
-            new Date(),
-            user.timezone,
-          ),
-        )
+        const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
+        const postedAt = DateTime.now().setZone(tz).toFormat("MMM dd, yyyy 'at' hh:mm a")
+        const publishedRows = activeAccounts.map((acc) => ({
+          platform: acc.platform || 'Unknown',
+          accountName: acc.username || acc.platform || 'Connected account',
+          postedAt,
+        }))
+        if (linkedInAccount) {
+          publishedRows.push({ platform: 'LINKEDIN', accountName: 'LinkedIn', postedAt })
+        }
+        const platformRows = buildPlatformRowsHtml(publishedRows)
+
+        await this.brevoService.sendPostPublishedEmail(
+          user.email,
+          user.name || 'Creator',
+          platformRows,
+        ).catch((err) => {
+          console.error('[Brevo Alert Failed]:', err?.message || err?.response?.data || JSON.stringify(err))
+        })
       }
 
-      return response.data
+      return responseData
 
     } catch (error) {
       // Any failed request to Outstand (rejected or unreachable) counts toward

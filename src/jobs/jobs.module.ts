@@ -1,7 +1,7 @@
 import { Module, OnModuleInit } from '@nestjs/common'
 import { ScheduleModule } from '@nestjs/schedule'
 import { RedisModule } from '../common/redis/redis.module'
-import { FacebookModule } from '../social-media/facebook/facebook.module'
+import { LinkedInModule } from '../social-media/linkedin/linkedin.module'
 import { JobsService } from './jobs.service'
 import { PostQueue } from './post.queue'
 import { PostWorker } from './post.worker'
@@ -11,7 +11,7 @@ import { BrevoModule } from '../brevo/brevo.module'
   imports: [
     ScheduleModule.forRoot(),
     RedisModule,
-    // FacebookModule,
+    LinkedInModule,
     BrevoModule,
   ],
   providers: [JobsService, PostQueue, PostWorker, OnboardingDripService],
