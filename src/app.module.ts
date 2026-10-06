@@ -38,7 +38,7 @@ import { MonitoringCoreModule } from './monitoring/monitoring-core.module'
 import { MonitoringModule } from './monitoring/monitoring.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }),LogoOverlayModule, FacebookModule, LinkedInModule, IndustriesModule, AuthModule,
+  imports: [ConfigModule.forRoot({ isGlobal: true }), EventEmitterModule.forRoot(),LogoOverlayModule, FacebookModule, LinkedInModule, IndustriesModule, AuthModule,
     UserModule, BrevoModule,
       JwtModule.register({
       secret: process.env.JWT_SECRET, // must be defined in .env
@@ -65,6 +65,8 @@ import { MonitoringModule } from './monitoring/monitoring.module'
   CalendarificModule,
   WebsiteWatcherModule,
   MetaModule,
+  // Global: provides MonitoringService to BrevoService, crons and workers.
+  MonitoringCoreModule,
   MonitoringModule,
 ],
   controllers: [AppController],

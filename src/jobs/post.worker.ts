@@ -128,6 +128,7 @@ import { prisma } from '../lib/prisma'
 import { normalizeTimezone } from '../common/utils/timezone.util'
 import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
 import { LinkedInService } from '../social-media/linkedin/linkedin.service'
+import { BrevoService } from '../brevo/brevo.service'
 
 interface PublishJobData {
   calendarPostId: string
