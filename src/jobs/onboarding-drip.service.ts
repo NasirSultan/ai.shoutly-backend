@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'
 import { DateTime } from 'luxon'
 import { prisma } from '../lib/prisma'
 import { BrevoService } from '../brevo/brevo.service'
+import { MonitoringService } from '../monitoring/monitoring.service'
 
 // Onboarding drip sequence: step 1 (welcome) fires immediately from
 // auth.service.ts#updateProfile. That same function is also supposed to
@@ -26,7 +27,10 @@ const MAX_DAYS = Math.max(...DRIP_STEPS.map((s) => s.days))
 
 @Injectable()
 export class OnboardingDripService {
-  constructor(private readonly brevoService: BrevoService) {}
+  constructor(
+    private readonly brevoService: BrevoService,
+    private readonly monitoring: MonitoringService,
+  ) {}
 
   // Runs every minute — same schedule as JobsService.checkDuePosts, so both
   // jobs share the same proven-reliable frequency on Render's free tier
@@ -86,6 +90,9 @@ export class OnboardingDripService {
     if (sentCount > 0) {
       console.log(`[OnboardingDrip] Sent ${sentCount} drip email(s)`)
     }
+
+    // Reached only when the run finished without throwing.
+    void this.monitoring.heartbeat('sendDueDripEmails')
   }
 
   // Anyone with a saved brand name has clearly finished the profile step,

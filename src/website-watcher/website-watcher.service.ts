@@ -16,6 +16,7 @@ import OpenAI from 'openai'
 import { prisma } from '../lib/prisma'
 import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 import { RedisService } from '../common/redis/redis.service'
+import { MonitoringService } from '../monitoring/monitoring.service'
 import {
   parseAnalysis,
   readTargetAudiences,
@@ -49,6 +50,7 @@ export class WebsiteWatcherService {
     private readonly configService: ConfigService,
     private readonly aiUsageLogService: AiUsageLogService,
     private readonly redisService: RedisService,
+    private readonly monitoring: MonitoringService,
   ) {}
 
   // The page's starting state: which website the user may check, how many
@@ -320,6 +322,7 @@ Rules for targetAudiences:
       })
       raw = completion.choices[0]?.message?.content ?? ''
     } catch (error: any) {
+      void this.monitoring.recordServiceError('deepseek')
       throw new BadGatewayException(error.message || 'DeepSeek request failed')
     }
 
@@ -391,6 +394,9 @@ Rules for targetAudiences:
     } catch (error: any) {
       if (error instanceof BadGatewayException) throw error
       const message = error.response?.data?.detail?.error || error.response?.data?.message || error.message
+      // Only failed API requests count. A website that blocks readers is
+      // reported by Tavily as a normal result (handled above) and isn't a Tavily problem.
+      void this.monitoring.recordServiceError('tavily')
       throw new BadGatewayException(message || 'Tavily API request failed')
     }
   }

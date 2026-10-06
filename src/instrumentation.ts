@@ -9,6 +9,7 @@ dotenv.config()
 import { NodeSDK } from '@opentelemetry/sdk-node'
 import { LangfuseSpanProcessor } from '@langfuse/otel'
 import { redactPii } from './common/utils/pii-redaction.util'
+import { initSentry } from './monitoring/sentry'
 
 function maskDeep(value: unknown): unknown {
   if (typeof value === 'string') return redactPii(value)
@@ -33,3 +34,7 @@ export const otelSdk = new NodeSDK({
 })
 
 otelSdk.start()
+
+// Error tracking (no-op without SENTRY_DSN). Started here, before the app is
+// imported, as Sentry requires.
+initSentry()

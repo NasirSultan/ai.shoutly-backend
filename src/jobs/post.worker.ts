@@ -126,6 +126,8 @@ import { RedisService } from '../common/redis/redis.service'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
 import { PostPublishedEvent } from '../events/post-published.event'
+import { MonitoringService } from '../monitoring/monitoring.service'
+import { captureError } from '../monitoring/sentry'
 
 interface PublishJobData {
   calendarPostId: string
@@ -142,6 +144,7 @@ export class PostWorker implements OnModuleInit {
   constructor(
     private readonly redisService: RedisService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
   }
@@ -172,11 +175,15 @@ export class PostWorker implements OnModuleInit {
           where: { id: job.data.calendarPostId, status: 'POSTING' },
           data: { status: 'FAILED' },
         })
+        // Final failure only (not each retry). The watchdog also emails an
+        // alert for posts that became FAILED.
+        captureError(err, 'publish-worker', { postId: job.data.calendarPostId, jobId: job.id, attempts: job.attemptsMade })
       }
     })
-    
+
     this.worker.on('error', (err) => {
       console.error('❌ Worker Error:', err)
+      captureError(err, 'publish-worker')
     })
     } catch (err) {
       console.error('[PostWorker] FAILED TO START WORKER:', err) // ← ADD THIS
@@ -314,6 +321,9 @@ export class PostWorker implements OnModuleInit {
       return response.data
 
     } catch (error) {
+      // Any failed request to Outstand (rejected or unreachable) counts toward
+      // the "outstand errors" alert.
+      if (axios.isAxiosError(error)) void this.monitoring.recordServiceError('outstand')
       if (axios.isAxiosError(error) && error.response) {
         console.error('--- OUTSTAND CRITICAL REMOTE EXCEPTION ---')
         console.error(JSON.stringify(error.response.data, null, 2))

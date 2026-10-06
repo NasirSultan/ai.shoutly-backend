@@ -5,6 +5,7 @@ import { DemoBookingStatus } from '@prisma/client'
 import { CreateBookDemoDto } from './dto/create-book-demo.dto'
 import { UpdateBookDemoStatusDto } from './dto/update-book-demo-status.dto'
 import { prisma } from '../lib/prisma'
+import { MonitoringService } from '../monitoring/monitoring.service'
 
 const TIMEZONE = 'Asia/Kolkata'
 const START_HOUR = 10
@@ -13,6 +14,8 @@ const BOOKABLE_WEEKDAYS = [1, 2, 3, 4, 5] // Luxon: Mon=1 ... Sun=7
 
 @Injectable()
 export class BookDemoService {
+  constructor(private readonly monitoring: MonitoringService) {}
+
   private isValidSlotTime(dt: DateTime): boolean {
     if (!dt.isValid) return false
     if (dt < DateTime.now().setZone(TIMEZONE)) return false
@@ -195,5 +198,8 @@ export class BookDemoService {
     if (result.count > 0) {
       console.log(`[BookDemo] Auto-deleted ${result.count} booking(s) older than 2 weeks`)
     }
+
+    // Reached only when the run finished without throwing.
+    void this.monitoring.heartbeat('cleanupOldBookings')
   }
 }

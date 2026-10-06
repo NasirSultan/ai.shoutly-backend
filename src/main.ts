@@ -22,7 +22,7 @@ async function bootstrap() {
   server.keepAliveTimeout = 300000
 
   console.log(`Server is running on port ${port}`)
-  console.log(`Health check available at http://localhost:${port}/health`)
+  console.log(`Health check available at http://localhost:${port}/api/health`)
 
   const flushLangfuseAndExit = async () => {
     await langfuseSpanProcessor.forceFlush().catch(() => undefined)
