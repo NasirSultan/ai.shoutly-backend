@@ -12,6 +12,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { UserModule } from './users/user.module';
 import { GeminiImageModule } from "./geminiimage/geminiimage.module";
 import { FacebookModule } from './social-media/facebook/facebook.module';
+import { LinkedInModule } from './social-media/linkedin/linkedin.module';
 import { JobsModule } from './jobs/jobs.module'
 import {AutopostModule} from './outstand/autopost.module'
 import { RagModule } from './rag/rag.module'
@@ -32,7 +33,7 @@ import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
 import { MetaModule } from './meta/meta.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }),LogoOverlayModule, FacebookModule,IndustriesModule, AuthModule,
+  imports: [ConfigModule.forRoot({ isGlobal: true }),LogoOverlayModule, FacebookModule, LinkedInModule, IndustriesModule, AuthModule,
     UserModule, BrevoModule,
       JwtModule.register({
       secret: process.env.JWT_SECRET, // must be defined in .env

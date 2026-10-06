@@ -32,7 +32,7 @@ describe('AutopostService ownership and analytics', () => {
 
   beforeEach(() => {
     redis = new FakeRedis();
-    service = new AutopostService(redis as any);
+    service = new AutopostService(redis as any, {} as any);
     jest.restoreAllMocks();
   });
 

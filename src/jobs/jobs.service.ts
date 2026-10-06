@@ -27,9 +27,10 @@ export class JobsService {  // ← Add implements OnModuleInit
           postTime: { lte: new Date() },
           status: 'SCHEDULED',
           user: {
-            socialAccounts: {
-              some: { status: 'active' } // Matches entries created by saveDirectConnection or finalizeTwoStepConnection
-            }
+            OR: [
+              { socialAccounts: { some: { status: 'active' } } },
+              { linkedAccounts: { some: { platform: 'LINKEDIN' } } },
+            ],
           },
         },
         select: { id: true, postTime: true, user: { select: { timezone: true } } },
