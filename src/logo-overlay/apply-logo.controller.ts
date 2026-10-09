@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, Post, Query, Res, UsePipes, ValidationPipe } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Param, Post, Query, Req, Res, UseGuards, UsePipes, ValidationPipe } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApplyLogoService } from './apply-logo.service';
 import { ApplyLogoDto } from './dto/apply-logo.dto';
 import { TemplateCheckoutDto } from './dto/template-checkout.dto';
 import { TemplatePaymentService } from './template-payment.service';
 import { VerifyPaymentDto } from '../subscription/dto/verify-payment.dto';
+import { AuthGuard } from '../common/guards/auth.guard';
 
 @Controller('templates')
 export class ApplyLogoController {
@@ -17,6 +18,19 @@ export class ApplyLogoController {
   @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
   apply(@Body() dto: ApplyLogoDto) {
     return this.applyLogoService.apply(dto);
+  }
+
+  // Same render for signed-in users on a paid plan (dashboard Brand Settings):
+  // no PREVIEW watermark, and the response includes a ready downloadUrl.
+  // The public /templates flow keeps using apply-logo + payment/credits.
+  @Post('apply-logo/subscriber')
+  @UseGuards(AuthGuard)
+  @UsePipes(new ValidationPipe({ whitelist: true, transform: true }))
+  async applyForSubscriber(@Req() req, @Body() dto: ApplyLogoDto) {
+    if (!(await this.applyLogoService.isPaidSubscriber(req.user.id))) {
+      throw new ForbiddenException('A paid plan is required for watermark-free renders');
+    }
+    return this.applyLogoService.apply(dto, { entitled: true });
   }
 
   // Pay-per-template: step 1 creates a Razorpay order for this render.

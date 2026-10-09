@@ -37,11 +37,15 @@ export class ApplyLogoService {
     private readonly redisService: RedisService
   ) {}
 
-  async apply(dto: ApplyLogoDto): Promise<{
+  // `entitled` = the caller is on a paid subscription (see isPaidSubscriber):
+  // their render is served without the PREVIEW watermark and can be
+  // downloaded straight away, with no per-template payment.
+  async apply(dto: ApplyLogoDto, opts: { entitled?: boolean } = {}): Promise<{
     renderId: string;
     downloadToken: string;
     expiresIn: number;
     previewUrl: string;
+    downloadUrl?: string;
     price: Record<string, number>;
     width: number;
     height: number;
@@ -94,7 +98,8 @@ export class ApplyLogoService {
         .getClient()
         .set(this.renderKey(renderId), imageUrl, { EX: DOWNLOAD_TOKEN_TTL_SECONDS });
 
-      const downloadToken = this.signDownloadToken(renderId, DOWNLOAD_TOKEN_TTL_SECONDS);
+      const entitled = opts.entitled === true;
+      const downloadToken = this.signDownloadToken(renderId, DOWNLOAD_TOKEN_TTL_SECONDS, entitled);
 
       // The preview is watermarked and the full-quality download is only
       // unlocked by paying for this render (see TemplatePaymentService).
@@ -103,6 +108,7 @@ export class ApplyLogoService {
         downloadToken,
         expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS,
         previewUrl: `/api/templates/render/${renderId}?token=${downloadToken}`,
+        ...(entitled ? { downloadUrl: `/api/templates/render/${renderId}/download?token=${downloadToken}` } : {}),
         price: TEMPLATE_PRICE,
         width: CANVAS,
         height: CANVAS,
@@ -114,8 +120,20 @@ export class ApplyLogoService {
     }
   }
 
-  signDownloadToken(renderId: string, expiresInSeconds: number): string {
-    return this.jwtLibService.sign({ purpose: DOWNLOAD_TOKEN_PURPOSE, renderId }, { expiresIn: expiresInSeconds });
+  signDownloadToken(renderId: string, expiresInSeconds: number, entitled = false): string {
+    return this.jwtLibService.sign(
+      { purpose: DOWNLOAD_TOKEN_PURPOSE, renderId, ...(entitled ? { entitled: true } : {}) },
+      { expiresIn: expiresInSeconds },
+    );
+  }
+
+  // Active, non-trial, unexpired subscription = paid plan.
+  async isPaidSubscriber(userId: string): Promise<boolean> {
+    const sub = await prisma.subscription.findFirst({
+      where: { userId, isActive: true, isTrial: false },
+      select: { expiresAt: true },
+    });
+    return !!sub && (!sub.expiresAt || sub.expiresAt.getTime() > Date.now());
   }
 
   // Download link handed out once a render is paid for (Razorpay or credit).
@@ -125,10 +143,10 @@ export class ApplyLogoService {
     return `/api/templates/render/${renderId}/download?token=${token}`;
   }
 
-  verifyRenderToken(renderId: string, token: string): void {
+  verifyRenderToken(renderId: string, token: string): { entitled: boolean } {
     if (!token) throw new ForbiddenException('Missing token');
 
-    let payload: { purpose?: string; renderId?: string };
+    let payload: { purpose?: string; renderId?: string; entitled?: boolean };
     try {
       payload = this.jwtLibService.verify(token);
     } catch {
@@ -138,6 +156,7 @@ export class ApplyLogoService {
     if (payload.purpose !== DOWNLOAD_TOKEN_PURPOSE || payload.renderId !== renderId) {
       throw new ForbiddenException('Token does not match this render');
     }
+    return { entitled: payload.entitled === true };
   }
 
   async getRenderImageUrl(renderId: string): Promise<string | null> {
@@ -145,21 +164,29 @@ export class ApplyLogoService {
   }
 
   async streamRender(renderId: string, token: string, asAttachment: boolean, res: Response): Promise<void> {
-    this.verifyRenderToken(renderId, token);
+    const { entitled } = this.verifyRenderToken(renderId, token);
 
     const purchase = await prisma.templatePurchase.findFirst({ where: { renderId, status: 'PAID' } });
 
     let buffer: Buffer;
     if (asAttachment) {
-      if (!purchase) throw new HttpException('Payment required to download this template', HttpStatus.PAYMENT_REQUIRED);
-      // Served from the purchase so the download keeps working after the
-      // short-lived Redis render key has expired.
-      buffer = await this.fetchAsBuffer(purchase.imageUrl);
+      if (purchase) {
+        // Served from the purchase so the download keeps working after the
+        // short-lived Redis render key has expired.
+        buffer = await this.fetchAsBuffer(purchase.imageUrl);
+      } else if (entitled) {
+        // Paid-plan subscriber: no per-template payment needed.
+        const imageUrl = await this.getRenderImageUrl(renderId);
+        if (!imageUrl) throw new ForbiddenException('Render expired or not found');
+        buffer = await this.fetchAsBuffer(imageUrl);
+      } else {
+        throw new HttpException('Payment required to download this template', HttpStatus.PAYMENT_REQUIRED);
+      }
     } else {
       const imageUrl = purchase?.imageUrl ?? (await this.getRenderImageUrl(renderId));
       if (!imageUrl) throw new ForbiddenException('Render expired or not found');
       buffer = await this.fetchAsBuffer(imageUrl);
-      if (!purchase) buffer = await this.watermark(buffer);
+      if (!purchase && !entitled) buffer = await this.watermark(buffer);
     }
 
     res.setHeader('Content-Type', 'image/png');
@@ -222,7 +249,7 @@ export class ApplyLogoService {
 
     if (!dto.showBadge || (!showLogoBox && lines.length === 0)) return null;
 
-    const paddingX = 14 * scale;
+    const paddingX = 10 * scale;
     const paddingY = 10 * scale;
     const gap = 10 * scale;
     const lineHeight = 15 * scale;
@@ -231,8 +258,9 @@ export class ApplyLogoService {
     // in the SVG isn't guaranteed to be installed wherever this renders, and
     // librsvg silently substitutes a fallback with different (usually wider)
     // metrics when it isn't. Erring toward a bit of extra right-padding is a
-    // far smaller problem than text clipping past the box edge.
-    const WIDTH_SAFETY_MARGIN = 1.15;
+    // far smaller problem than text clipping past the box edge. Kept small
+    // (5%) so the badge doesn't show a wide empty strip after the text.
+    const WIDTH_SAFETY_MARGIN = 1.05;
     const textBlockWidth =
       lines.reduce((max, l) => Math.max(max, this.estimateTextWidth(l.text, l.fontSize, l.fontWeight)), 0) *
       WIDTH_SAFETY_MARGIN;
