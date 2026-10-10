@@ -121,7 +121,7 @@
 
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { Worker, Job } from 'bullmq'
-import { EventEmitter2 } from '@nestjs/event-emitter'
+import { DateTime } from 'luxon'
 import { RedisService } from '../common/redis/redis.service'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
@@ -129,6 +129,8 @@ import { normalizeTimezone } from '../common/utils/timezone.util'
 import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
 import { LinkedInService } from '../social-media/linkedin/linkedin.service'
 import { BrevoService } from '../brevo/brevo.service'
+import { MonitoringService } from '../monitoring/monitoring.service'
+import { captureError } from '../monitoring/sentry'
 
 interface PublishJobData {
   calendarPostId: string
@@ -146,6 +148,7 @@ export class PostWorker implements OnModuleInit {
     private readonly redisService: RedisService,
     private readonly brevoService: BrevoService,
     private readonly linkedInService: LinkedInService,
+    private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
   }
@@ -254,7 +257,7 @@ export class PostWorker implements OnModuleInit {
     const targetPlatforms = post.targetPlatforms ?? []
     const activeAccounts = user.socialAccounts.filter((acc) => {
       if (!targetPlatforms.length) return true
-      return targetPlatforms.includes(acc.platform)
+      return !!acc.platform && targetPlatforms.includes(acc.platform)
     })
     const wantsLinkedIn = !targetPlatforms.length || targetPlatforms.includes('LINKEDIN')
     const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
