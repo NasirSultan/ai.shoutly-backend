@@ -16,15 +16,33 @@ export class CalendarService {
     private readonly autopostService: AutopostService,
   ) {}
 
-  private parseTargetPlatforms(raw?: string | SocialPlatform[]): SocialPlatform[] {
+  private parseTargetPlatforms(raw?: string | string[]): SocialPlatform[] {
     if (!raw) return []
-    if (Array.isArray(raw)) return raw
+    if (Array.isArray(raw)) return raw as SocialPlatform[]
     try {
       const parsed = JSON.parse(raw)
       return Array.isArray(parsed) ? parsed as SocialPlatform[] : []
     } catch {
       return raw.split(',').map((s) => s.trim()).filter(Boolean) as SocialPlatform[]
     }
+  }
+
+  private youtubeFields(body: {
+    youtubeVideoUrl?: string
+    youtubeTitle?: string
+    youtubePrivacy?: string
+    youtubeIsShort?: boolean | string
+    youtubeMadeForKids?: boolean | string
+    youtubeTags?: string
+  }) {
+    const data: Record<string, string | boolean | null> = {}
+    if (body.youtubeVideoUrl !== undefined) data.youtubeVideoUrl = body.youtubeVideoUrl || null
+    if (body.youtubeTitle !== undefined) data.youtubeTitle = body.youtubeTitle || null
+    if (body.youtubePrivacy !== undefined) data.youtubePrivacy = body.youtubePrivacy || null
+    if (body.youtubeIsShort !== undefined) data.youtubeIsShort = body.youtubeIsShort === true || body.youtubeIsShort === 'true'
+    if (body.youtubeMadeForKids !== undefined) data.youtubeMadeForKids = body.youtubeMadeForKids === true || body.youtubeMadeForKids === 'true'
+    if (body.youtubeTags !== undefined) data.youtubeTags = body.youtubeTags || null
+    return data
   }
 
 
@@ -399,7 +417,7 @@ async getPlanByUser(userId: string) {
   async updatePost(
     userId: string,
     postId: string,
-    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string,timezone?: string; targetPlatforms?: string | SocialPlatform[] },
+    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string,timezone?: string; targetPlatforms?: string | string[]; youtubeVideoUrl?: string; youtubeTitle?: string; youtubePrivacy?: string; youtubeIsShort?: boolean | string; youtubeMadeForKids?: boolean | string; youtubeTags?: string },
     fileData?: { imageUrl: string; deleteUrl: string }
   ) {
     const post = await prisma.calendarPost.findUnique({
@@ -439,6 +457,7 @@ async getPlanByUser(userId: string) {
     if (body.targetPlatforms !== undefined) {
       updatedData.targetPlatforms = this.parseTargetPlatforms(body.targetPlatforms)
     }
+    Object.assign(updatedData, this.youtubeFields(body))
 
     let imageData: { imageUrl: string; deleteUrl: string } | undefined
     if (body.imageUrl) {
@@ -661,9 +680,15 @@ async getPostDetails(userId: string, postId: string) {
         platforms = post.targetPlatforms.map((p) => p.toLowerCase())
       } else {
         const accounts = await prisma.socialAccount.findMany({
-          where: { userId, status: 'active' },
+          where: { userId, status: 'active', platform: { notIn: ['YOUTUBE', 'GOOGLE_BUSINESS'] } },
         })
-        platforms = accounts.map((a) => a.platform.toLowerCase())
+        platforms = accounts.map((a) => a.platform?.toLowerCase()).filter((platform): platform is string => !!platform)
+        if (await prisma.youtubeAccount.findUnique({ where: { userId } })) platforms.push('youtube')
+        const google = await prisma.googleBusinessAccount.findUnique({
+          where: { userId },
+          include: { locations: { where: { selected: true, canPost: true } } },
+        })
+        if (google?.locations.length) platforms.push('google_business')
       }
 
       if (!platforms.length) {
@@ -674,6 +699,16 @@ async getPostDetails(userId: string, postId: string) {
         content: post.content?.text || '',
         platforms,
         mediaUrls: mediaUrl ? [mediaUrl] : undefined,
+        youtube: post.youtubeVideoUrl
+          ? {
+              videoUrl: post.youtubeVideoUrl,
+              title: post.youtubeTitle || undefined,
+              privacyStatus: (post.youtubePrivacy as 'public' | 'private' | 'unlisted' | null) || undefined,
+              tags: post.youtubeTags ? post.youtubeTags.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined,
+              madeForKids: post.youtubeMadeForKids,
+              isShort: post.youtubeIsShort,
+            }
+          : undefined,
       })
 
       await prisma.calendarPost.update({
@@ -702,7 +737,7 @@ async getPostDetails(userId: string, postId: string) {
   // normally — only the underlying Content/Image rows are isolated.
   async createManualPost(
     userId: string,
-    body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | SocialPlatform[] },
+    body: { postTime: string; contentText?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | string[]; youtubeVideoUrl?: string; youtubeTitle?: string; youtubePrivacy?: string; youtubeIsShort?: boolean | string; youtubeMadeForKids?: boolean | string; youtubeTags?: string },
     imageData?: { imageUrl: string; deleteUrl: string }
   ) {
     const { postTime, contentText } = body
@@ -778,6 +813,7 @@ async getPostDetails(userId: string, postId: string) {
         postTime: utcPostTime,
         status: 'SCHEDULED',
         targetPlatforms,
+        ...this.youtubeFields(body),
       }
     })
 
@@ -803,7 +839,7 @@ async getPostDetails(userId: string, postId: string) {
   async updateManualPost(
     userId: string,
     postId: string,
-    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | SocialPlatform[] },
+    body: { postTime?: string; status?: string; contentText?: string; reelId?: string; imageUrl?: string; timezone?: string; targetPlatforms?: string | string[]; youtubeVideoUrl?: string; youtubeTitle?: string; youtubePrivacy?: string; youtubeIsShort?: boolean | string; youtubeMadeForKids?: boolean | string; youtubeTags?: string },
     fileData?: { imageUrl: string; deleteUrl: string }
   ) {
     return this.updatePost(userId, postId, body, fileData)

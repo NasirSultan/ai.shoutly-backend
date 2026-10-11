@@ -25,4 +25,8 @@ export class YoutubeOptionsDto {
   @IsString()
   @IsOptional()
   categoryId?: string;
+
+  @IsString()
+  @IsOptional()
+  videoUrl?: string;
 }

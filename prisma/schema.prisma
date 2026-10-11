@@ -40,6 +40,8 @@ model User {
   socialAccounts   SocialAccount[]
   posts            Post[]
   facebookAccount  FacebookAccount?
+  youtubeAccount   YoutubeAccount?
+  googleBusinessAccount GoogleBusinessAccount?
   emailNotification  Boolean        @default(true)
   pushNotification   Boolean        @default(false)
   weeklyNotification Boolean        @default(true)
@@ -393,6 +395,12 @@ model CalendarPost {
   imageId       String?
   image         Image?      @relation(fields: [imageId], references: [id], onDelete: SetNull)
   imageUrl      String?     @default("")
+  youtubeVideoUrl String?
+  youtubeTitle    String?
+  youtubePrivacy  String?
+  youtubeIsShort  Boolean     @default(false)
+  youtubeMadeForKids Boolean  @default(false)
+  youtubeTags     String?
   type          PostType
   postTime      DateTime
   status        PostStatus  @default(SCHEDULED)
@@ -403,6 +411,53 @@ model CalendarPost {
   @@index([userId])
   @@index([subIndustryId])
   @@index([postTime])
+}
+
+model YoutubeAccount {
+  id               String    @id @default(uuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken      String
+  refreshToken     String?
+  scopes           String
+  tokenExpiry      DateTime?
+  channelId        String?
+  channelTitle     String?
+  thumbnailUrl     String?
+  subscriberCount  String?
+  viewCount        String?
+  videoCount       String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+model GoogleBusinessAccount {
+  id           String                   @id @default(uuid())
+  userId       String                   @unique
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken  String
+  refreshToken String?
+  scopes       String
+  tokenExpiry  DateTime?
+  locations    GoogleBusinessLocation[]
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+}
+
+model GoogleBusinessLocation {
+  id                      String                @id @default(uuid())
+  googleBusinessAccountId String
+  account                 GoogleBusinessAccount @relation(fields: [googleBusinessAccountId], references: [id], onDelete: Cascade)
+  accountResourceName     String
+  locationResourceName    String
+  title                   String
+  selected                Boolean               @default(false)
+  canPost                 Boolean               @default(false)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  @@unique([googleBusinessAccountId, locationResourceName])
+  @@index([googleBusinessAccountId])
 }
 
 model FacebookAccount {
