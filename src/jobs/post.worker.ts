@@ -128,6 +128,9 @@ import { prisma } from '../lib/prisma'
 import { normalizeTimezone } from '../common/utils/timezone.util'
 import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
 import { LinkedInService } from '../social-media/linkedin/linkedin.service'
+import { YoutubeService } from '../social-media/youtube/youtube.service'
+import { GoogleBusinessService } from '../social-media/google-business/google-business.service'
+import { XService } from '../social-media/x/x.service'
 import { BrevoService } from '../brevo/brevo.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import { captureError } from '../monitoring/sentry'
@@ -148,6 +151,9 @@ export class PostWorker implements OnModuleInit {
     private readonly redisService: RedisService,
     private readonly brevoService: BrevoService,
     private readonly linkedInService: LinkedInService,
+    private readonly youtubeService: YoutubeService,
+    private readonly googleBusinessService: GoogleBusinessService,
+    private readonly xService: XService,
     private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
@@ -232,6 +238,9 @@ export class PostWorker implements OnModuleInit {
           include: {
             socialAccounts: { where: { status: 'active' } },
             linkedAccounts: { where: { platform: 'LINKEDIN' } },
+            youtubeAccount: true,
+            xAccount: true,
+            googleBusinessAccount: { include: { locations: { where: { selected: true, canPost: true } } } },
           },
         },
         content: true,
@@ -256,13 +265,22 @@ export class PostWorker implements OnModuleInit {
     const { user } = post
     const targetPlatforms = post.targetPlatforms ?? []
     const activeAccounts = user.socialAccounts.filter((acc) => {
+      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X') return false
       if (!targetPlatforms.length) return true
       return !!acc.platform && targetPlatforms.includes(acc.platform)
     })
     const wantsLinkedIn = !targetPlatforms.length || targetPlatforms.includes('LINKEDIN')
+    const wantsYoutube = targetPlatforms.includes('YOUTUBE') || (
+      !targetPlatforms.length && !!user.youtubeAccount && !!(post.youtubeVideoUrl || post.reel?.file)
+    )
+    const wantsGoogle = !targetPlatforms.length || targetPlatforms.includes('GOOGLE_BUSINESS')
+    const wantsX = !targetPlatforms.length || targetPlatforms.includes('X')
     const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
+    const youtubeAccount = wantsYoutube ? user.youtubeAccount : undefined
+    const googleLocations = wantsGoogle ? user.googleBusinessAccount?.locations ?? [] : []
+    const xAccount = wantsX ? user.xAccount : undefined
 
-    if (!activeAccounts.length && !linkedInAccount) {
+    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount) {
       throw new Error(`User ${user.id} has no connected channels for the selected platforms`)
     }
 
@@ -293,6 +311,25 @@ export class PostWorker implements OnModuleInit {
           mediaUrl,
           video: !!mediaUrl && (mediaUrl.split('?')[0].toLowerCase().endsWith('.mp4') || !!post.reel),
         })
+      }
+
+      if (youtubeAccount) {
+        const videoUrl = post.youtubeVideoUrl || (post.reel?.file ? mediaUrl : undefined)
+        await this.youtubeService.publishForUser(user.id, container.content, videoUrl, {
+          title: post.youtubeTitle || undefined,
+          privacyStatus: (post.youtubePrivacy as 'public' | 'private' | 'unlisted' | null) || undefined,
+          tags: post.youtubeTags ? post.youtubeTags.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined,
+          madeForKids: post.youtubeMadeForKids,
+          isShort: post.youtubeIsShort,
+        })
+      }
+
+      if (googleLocations.length) {
+        await this.googleBusinessService.publishForUser(user.id, container.content, post.reel ? undefined : mediaUrl)
+      }
+
+      if (xAccount) {
+        await this.xService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined)
       }
 
       let responseData: unknown = null
@@ -333,6 +370,15 @@ export class PostWorker implements OnModuleInit {
         }))
         if (linkedInAccount) {
           publishedRows.push({ platform: 'LINKEDIN', accountName: 'LinkedIn', postedAt })
+        }
+        if (youtubeAccount) {
+          publishedRows.push({ platform: 'YOUTUBE', accountName: youtubeAccount.channelTitle || 'YouTube', postedAt })
+        }
+        if (googleLocations.length) {
+          publishedRows.push({ platform: 'GOOGLE_BUSINESS', accountName: googleLocations.map((location) => location.title).join(', '), postedAt })
+        }
+        if (xAccount) {
+          publishedRows.push({ platform: 'X', accountName: xAccount.username ? `@${xAccount.username}` : 'X', postedAt })
         }
         const platformRows = buildPlatformRowsHtml(publishedRows)
 
