@@ -42,6 +42,7 @@ model User {
   facebookAccount  FacebookAccount?
   youtubeAccount   YoutubeAccount?
   googleBusinessAccount GoogleBusinessAccount?
+  xAccount         XAccount?
   emailNotification  Boolean        @default(true)
   pushNotification   Boolean        @default(false)
   weeklyNotification Boolean        @default(true)
@@ -411,6 +412,25 @@ model CalendarPost {
   @@index([userId])
   @@index([subIndustryId])
   @@index([postTime])
+}
+
+model XAccount {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken     String
+  refreshToken    String?
+  scopes          String
+  tokenExpiry     DateTime?
+  xUserId         String?
+  username        String?
+  name            String?
+  profileImageUrl String?
+  followersCount  String?
+  followingCount  String?
+  tweetCount      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
 model YoutubeAccount {

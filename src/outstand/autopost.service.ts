@@ -11,6 +11,7 @@ import { RedisService } from '../common/redis/redis.service';
 import { LinkedInService } from '../social-media/linkedin/linkedin.service';
 import { YoutubeService } from '../social-media/youtube/youtube.service';
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service';
+import { XService } from '../social-media/x/x.service';
 
 // Generic, publicly-documented social-media-marketing benchmark posting
 // windows per platform — NOT computed from any individual user's own data.
@@ -66,6 +67,7 @@ export class AutopostService {
     private readonly linkedInService: LinkedInService,
     private readonly youtubeService: YoutubeService,
     private readonly googleBusinessService: GoogleBusinessService,
+    private readonly xService: XService,
   ) {
     if (!this.outstandApiKey) {
       console.warn('Warning: OUTSTAND_API_KEY is not defined in your environment variables.');
@@ -179,8 +181,8 @@ export class AutopostService {
   }
 
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
-    if (dto.platform === 'youtube' || dto.platform === 'google_business') {
-      throw new BadRequestException('Connect YouTube and Google Business from their own buttons.');
+    if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x') {
+      throw new BadRequestException('Connect YouTube, Google Business, and X from their own buttons.');
     }
     try {
       console.log('Outstand Config:', { url: this.outstandBaseUrl, hasKey: !!this.outstandApiKey, platform: dto.platform });
@@ -481,7 +483,8 @@ export class AutopostService {
     const wantsLinkedIn = platforms.includes('LINKEDIN');
     const wantsYoutube = platforms.includes('YOUTUBE');
     const wantsGoogle = platforms.includes('GOOGLE_BUSINESS');
-    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS');
+    const wantsX = platforms.includes('X');
+    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X');
 
     const verifiedAccounts = outstandPlatforms.length
       ? await this.prisma.socialAccount.findMany({
@@ -508,6 +511,9 @@ export class AutopostService {
           include: { locations: { where: { selected: true, canPost: true } } },
         }))?.locations ?? []
       : [];
+    const xAccount = wantsX
+      ? await this.prisma.xAccount.findUnique({ where: { userId } })
+      : null;
 
     if (wantsLinkedIn && !linkedInAccount) {
       throw new BadRequestException('Connect your LinkedIn profile before posting to LinkedIn.');
@@ -518,8 +524,11 @@ export class AutopostService {
     if (wantsGoogle && !googleLocations.length) {
       throw new BadRequestException('Choose a Google Business location before posting.');
     }
+    if (wantsX && !xAccount) {
+      throw new BadRequestException('Connect X before posting to X.');
+    }
 
-    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !verifiedAccounts.length) {
+    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !verifiedAccounts.length) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
@@ -580,6 +589,10 @@ export class AutopostService {
 
       if (googleLocations.length) {
         await this.googleBusinessService.publishForUser(userId, dto.content, dto.mediaUrls?.[0]);
+      }
+
+      if (xAccount) {
+        await this.xService.publishForUser(userId, dto.content, dto.mediaUrls);
       }
 
       let outstandPostId: string | null = null;
@@ -662,7 +675,7 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
     }
 
-    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS');
+    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X');
     if (!outstandPlatforms.length) {
       return { success: true, scheduled: [], failed: [] };
     }

@@ -130,6 +130,7 @@ import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
 import { LinkedInService } from '../social-media/linkedin/linkedin.service'
 import { YoutubeService } from '../social-media/youtube/youtube.service'
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service'
+import { XService } from '../social-media/x/x.service'
 import { BrevoService } from '../brevo/brevo.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import { captureError } from '../monitoring/sentry'
@@ -152,6 +153,7 @@ export class PostWorker implements OnModuleInit {
     private readonly linkedInService: LinkedInService,
     private readonly youtubeService: YoutubeService,
     private readonly googleBusinessService: GoogleBusinessService,
+    private readonly xService: XService,
     private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
@@ -237,6 +239,7 @@ export class PostWorker implements OnModuleInit {
             socialAccounts: { where: { status: 'active' } },
             linkedAccounts: { where: { platform: 'LINKEDIN' } },
             youtubeAccount: true,
+            xAccount: true,
             googleBusinessAccount: { include: { locations: { where: { selected: true, canPost: true } } } },
           },
         },
@@ -262,7 +265,7 @@ export class PostWorker implements OnModuleInit {
     const { user } = post
     const targetPlatforms = post.targetPlatforms ?? []
     const activeAccounts = user.socialAccounts.filter((acc) => {
-      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS') return false
+      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X') return false
       if (!targetPlatforms.length) return true
       return !!acc.platform && targetPlatforms.includes(acc.platform)
     })
@@ -271,11 +274,13 @@ export class PostWorker implements OnModuleInit {
       !targetPlatforms.length && !!user.youtubeAccount && !!(post.youtubeVideoUrl || post.reel?.file)
     )
     const wantsGoogle = !targetPlatforms.length || targetPlatforms.includes('GOOGLE_BUSINESS')
+    const wantsX = !targetPlatforms.length || targetPlatforms.includes('X')
     const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
     const youtubeAccount = wantsYoutube ? user.youtubeAccount : undefined
     const googleLocations = wantsGoogle ? user.googleBusinessAccount?.locations ?? [] : []
+    const xAccount = wantsX ? user.xAccount : undefined
 
-    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length) {
+    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount) {
       throw new Error(`User ${user.id} has no connected channels for the selected platforms`)
     }
 
@@ -323,6 +328,10 @@ export class PostWorker implements OnModuleInit {
         await this.googleBusinessService.publishForUser(user.id, container.content, post.reel ? undefined : mediaUrl)
       }
 
+      if (xAccount) {
+        await this.xService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined)
+      }
+
       let responseData: unknown = null
       if (outstandAccountIds.length) {
         const response = await axios.post(
@@ -367,6 +376,9 @@ export class PostWorker implements OnModuleInit {
         }
         if (googleLocations.length) {
           publishedRows.push({ platform: 'GOOGLE_BUSINESS', accountName: googleLocations.map((location) => location.title).join(', '), postedAt })
+        }
+        if (xAccount) {
+          publishedRows.push({ platform: 'X', accountName: xAccount.username ? `@${xAccount.username}` : 'X', postedAt })
         }
         const platformRows = buildPlatformRowsHtml(publishedRows)
 
