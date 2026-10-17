@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'crypto';
 import axios from 'axios';
 import { prisma } from '../../lib/prisma';
 import { RedisService } from '../../common/redis/redis.service';
+import { withRefreshLock } from '../oauth-refresh-lock';
 
 const SCOPES = 'tweet.read tweet.write users.read media.write offline.access';
 
@@ -29,7 +30,7 @@ export class XService {
     const state = randomBytes(16).toString('base64url');
     await this.redisService.getClient().set(
       `x:oauth:${state}`,
-      JSON.stringify({ userId, token: shoutlyToken, verifier }),
+      JSON.stringify({ userId, verifier }),
       { EX: 600 },
     );
     const params = new URLSearchParams({
@@ -44,14 +45,14 @@ export class XService {
     return `https://x.com/i/oauth2/authorize?${params.toString()}`;
   }
 
-  async takePending(state: string): Promise<{ userId: string; token: string; verifier: string } | null> {
+  async takePending(state: string): Promise<{ userId: string; verifier: string } | null> {
     const key = `x:oauth:${state}`;
     const raw = await this.redisService.getClient().get(key);
     if (!raw) return null;
     await this.redisService.getClient().del(key);
-    const parsed = JSON.parse(raw) as { userId?: string; token?: string; verifier?: string };
-    if (!parsed.userId || !parsed.token || !parsed.verifier) return null;
-    return { userId: parsed.userId, token: parsed.token, verifier: parsed.verifier };
+    const parsed = JSON.parse(raw) as { userId?: string; verifier?: string };
+    if (!parsed.userId || !parsed.verifier) return null;
+    return { userId: parsed.userId, verifier: parsed.verifier };
   }
 
   async connectFromCode(code: string, userId: string, verifier: string) {
@@ -88,41 +89,14 @@ export class XService {
     if (!account) {
       return { connected: false, expired: false, name: null, username: null, picture: null, followers: null };
     }
-    try {
-      const token = await this.freshToken(account);
-      const profile = await this.fetchMe(token);
-      if (profile) {
-        await prisma.xAccount.update({
-          where: { userId },
-          data: {
-            xUserId: profile.id,
-            username: profile.username ?? account.username,
-            name: profile.name ?? account.name,
-            profileImageUrl: profile.profile_image_url ?? account.profileImageUrl,
-            followersCount: profile.public_metrics?.followers_count != null ? String(profile.public_metrics.followers_count) : account.followersCount,
-            followingCount: profile.public_metrics?.following_count != null ? String(profile.public_metrics.following_count) : account.followingCount,
-            tweetCount: profile.public_metrics?.tweet_count != null ? String(profile.public_metrics.tweet_count) : account.tweetCount,
-          },
-        });
-      }
-      return {
-        connected: true,
-        expired: false,
-        name: profile?.name ?? account.name,
-        username: profile?.username ?? account.username,
-        picture: profile?.profile_image_url ?? account.profileImageUrl,
-        followers: profile?.public_metrics?.followers_count != null ? String(profile.public_metrics.followers_count) : account.followersCount,
-      };
-    } catch {
-      return {
-        connected: true,
-        expired: true,
-        name: account.name,
-        username: account.username,
-        picture: account.profileImageUrl,
-        followers: account.followersCount,
-      };
-    }
+    return {
+      connected: true,
+      expired: !account.refreshToken,
+      name: account.name,
+      username: account.username,
+      picture: account.profileImageUrl,
+      followers: account.followersCount,
+    };
   }
 
   async disconnect(userId: string) {
@@ -153,6 +127,7 @@ export class XService {
     const caption = (text || '').trim();
     const urls = (mediaUrls || []).map((url) => url.trim()).filter(Boolean);
     if (!caption && !urls.length) throw new BadRequestException('Write a caption or attach media before posting to X.');
+    if ([...caption].length > 280) throw new BadRequestException('X posts can be at most 280 characters.');
     const token = await this.freshToken(account);
     const mediaIds: string[] = [];
     const video = urls.find((url) => this.looksLikeVideo(url));
@@ -278,31 +253,35 @@ export class XService {
 
   private async freshToken(account: { userId: string; accessToken: string; refreshToken: string | null; tokenExpiry: Date | null }) {
     if (!account.tokenExpiry || account.tokenExpiry.getTime() > Date.now() + 60_000) return account.accessToken;
-    if (!account.refreshToken) throw new BadRequestException('Connect X again.');
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: account.refreshToken,
+    return withRefreshLock(this.redisService, 'x', account.userId, async () => {
+      const latest = await prisma.xAccount.findUnique({ where: { userId: account.userId } });
+      if (!latest?.refreshToken) throw new BadRequestException('Connect X again.');
+      if (!latest.tokenExpiry || latest.tokenExpiry.getTime() > Date.now() + 60_000) return latest.accessToken;
+      const body = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: latest.refreshToken,
+      });
+      const response = await axios.post('https://api.x.com/2/oauth2/token', body.toString(), {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`,
+        },
+        validateStatus: () => true,
+      });
+      if (response.status >= 400 || !response.data?.access_token) {
+        throw new BadRequestException('Connect X again.');
+      }
+      const expiry = response.data.expires_in ? new Date(Date.now() + response.data.expires_in * 1000) : null;
+      await prisma.xAccount.update({
+        where: { userId: account.userId },
+        data: {
+          accessToken: response.data.access_token,
+          refreshToken: response.data.refresh_token || latest.refreshToken,
+          tokenExpiry: expiry,
+        },
+      });
+      return response.data.access_token as string;
     });
-    const response = await axios.post('https://api.x.com/2/oauth2/token', body.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`,
-      },
-      validateStatus: () => true,
-    });
-    if (response.status >= 400 || !response.data?.access_token) {
-      throw new BadRequestException('Connect X again.');
-    }
-    const expiry = response.data.expires_in ? new Date(Date.now() + response.data.expires_in * 1000) : null;
-    await prisma.xAccount.update({
-      where: { userId: account.userId },
-      data: {
-        accessToken: response.data.access_token,
-        refreshToken: response.data.refresh_token || account.refreshToken,
-        tokenExpiry: expiry,
-      },
-    });
-    return response.data.access_token as string;
   }
 
   private async revoke(token: string, hint: 'access_token' | 'refresh_token') {

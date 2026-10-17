@@ -8,9 +8,10 @@ import { YoutubeModule } from '../social-media/youtube/youtube.module';
 import { GoogleBusinessModule } from '../social-media/google-business/google-business.module';
 import { XModule } from '../social-media/x/x.module';
 import { TiktokModule } from '../social-media/tiktok/tiktok.module';
+import { BlueskyModule } from '../social-media/bluesky/bluesky.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, TiktokModule],
+  imports: [AuthModule, RedisModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, TiktokModule, BlueskyModule],
   controllers: [AutopostController],
   providers: [AutopostService],
   exports: [AutopostService],

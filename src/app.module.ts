@@ -20,6 +20,7 @@ import { YoutubeModule } from './social-media/youtube/youtube.module';
 import { GoogleBusinessModule } from './social-media/google-business/google-business.module';
 import { XModule } from './social-media/x/x.module';
 import { TiktokModule } from './social-media/tiktok/tiktok.module';
+import { BlueskyModule } from './social-media/bluesky/bluesky.module';
 import { JobsModule } from './jobs/jobs.module'
 import {AutopostModule} from './outstand/autopost.module'
 import { RagModule } from './rag/rag.module'
@@ -42,7 +43,7 @@ import { MonitoringCoreModule } from './monitoring/monitoring-core.module'
 import { MonitoringModule } from './monitoring/monitoring.module'
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), EventEmitterModule.forRoot(),LogoOverlayModule, FacebookModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, TiktokModule, IndustriesModule, AuthModule,
+  imports: [ConfigModule.forRoot({ isGlobal: true }), EventEmitterModule.forRoot(),LogoOverlayModule, FacebookModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, TiktokModule, BlueskyModule, IndustriesModule, AuthModule,
     UserModule, BrevoModule,
       JwtModule.register({
       secret: process.env.JWT_SECRET, // must be defined in .env

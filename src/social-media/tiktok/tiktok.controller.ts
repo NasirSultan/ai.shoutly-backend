@@ -1,15 +1,11 @@
 import { Controller, Delete, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { TiktokService } from './tiktok.service';
 
 @Controller('tiktok')
 export class TiktokController {
-  constructor(
-    private readonly tiktokService: TiktokService,
-    private readonly jwtService: JwtService,
-  ) {}
+  constructor(private readonly tiktokService: TiktokService) {}
 
   @UseGuards(AuthGuard)
   @Get('auth')
@@ -32,7 +28,6 @@ export class TiktokController {
     try {
       const pending = await this.tiktokService.takePending(state);
       if (!pending) return res.redirect(`${done}?tiktok=error`);
-      this.jwtService.verify(pending.token);
       await this.tiktokService.connectFromCode(code, pending.userId);
       return res.redirect(`${done}?tiktok=connected`);
     } catch (error) {

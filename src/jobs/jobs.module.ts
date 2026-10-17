@@ -6,6 +6,7 @@ import { YoutubeModule } from '../social-media/youtube/youtube.module'
 import { GoogleBusinessModule } from '../social-media/google-business/google-business.module'
 import { XModule } from '../social-media/x/x.module'
 import { TiktokModule } from '../social-media/tiktok/tiktok.module'
+import { BlueskyModule } from '../social-media/bluesky/bluesky.module'
 import { JobsService } from './jobs.service'
 import { PostQueue } from './post.queue'
 import { PostWorker } from './post.worker'
@@ -20,6 +21,7 @@ import { BrevoModule } from '../brevo/brevo.module'
     GoogleBusinessModule,
     XModule,
     TiktokModule,
+    BlueskyModule,
     BrevoModule,
   ],
   providers: [JobsService, PostQueue, PostWorker, OnboardingDripService],

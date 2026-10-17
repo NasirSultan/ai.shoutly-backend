@@ -1,15 +1,11 @@
 import { Controller, Delete, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { XService } from './x.service';
 
 @Controller('x')
 export class XController {
-  constructor(
-    private readonly xService: XService,
-    private readonly jwtService: JwtService,
-  ) {}
+  constructor(private readonly xService: XService) {}
 
   @UseGuards(AuthGuard)
   @Get('auth')
@@ -36,7 +32,6 @@ export class XController {
     try {
       const pending = await this.xService.takePending(state);
       if (!pending) return res.redirect(`${done}?x=error`);
-      this.jwtService.verify(pending.token);
       await this.xService.connectFromCode(code, pending.userId, pending.verifier);
       return res.redirect(`${done}?x=connected`);
     } catch (error) {

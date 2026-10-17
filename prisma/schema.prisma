@@ -44,6 +44,7 @@ model User {
   googleBusinessAccount GoogleBusinessAccount?
   xAccount         XAccount?
   tiktokAccount    TiktokAccount?
+  blueskyAccount   BlueskyAccount?
   emailNotification  Boolean        @default(true)
   pushNotification   Boolean        @default(false)
   weeklyNotification Boolean        @default(true)
@@ -407,6 +408,7 @@ model CalendarPost {
   postTime      DateTime
   status        PostStatus  @default(SCHEDULED)
   targetPlatforms SocialPlatform[] @default([])
+  publishedPlatforms String[] @default([])
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -435,6 +437,41 @@ model TiktokAccount {
   videoCount      String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+}
+
+model BlueskyAccount {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  did             String
+  handle          String
+  pdsUrl          String
+  // "oauth" (AT Protocol OAuth, session lives in BlueskyOAuthSession) or
+  // "app_password" (legacy createSession; accessJwt/refreshJwt below).
+  authType        String    @default("app_password")
+  // "active" | "expired" — expired means the user must reconnect.
+  status          String    @default("active")
+  lastError       String?
+  accessJwt       String?
+  refreshJwt      String?
+  tokenExpiry     DateTime?
+  displayName     String?
+  avatarUrl       String?
+  followersCount  String?
+  followsCount    String?
+  postsCount      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// AT Protocol OAuth session store (@atproto/oauth-client-node), keyed by DID.
+// `data` holds the DPoP key + token set as JSON, encrypted when
+// TOKEN_ENCRYPTION_KEY is set.
+model BlueskyOAuthSession {
+  did       String   @id
+  data      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model XAccount {

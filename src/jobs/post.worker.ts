@@ -132,6 +132,7 @@ import { YoutubeService } from '../social-media/youtube/youtube.service'
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service'
 import { XService } from '../social-media/x/x.service'
 import { TiktokService } from '../social-media/tiktok/tiktok.service'
+import { BlueskyService } from '../social-media/bluesky/bluesky.service'
 import { BrevoService } from '../brevo/brevo.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import { captureError } from '../monitoring/sentry'
@@ -156,6 +157,7 @@ export class PostWorker implements OnModuleInit {
     private readonly googleBusinessService: GoogleBusinessService,
     private readonly xService: XService,
     private readonly tiktokService: TiktokService,
+    private readonly blueskyService: BlueskyService,
     private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
@@ -243,6 +245,7 @@ export class PostWorker implements OnModuleInit {
             youtubeAccount: true,
             xAccount: true,
             tiktokAccount: true,
+            blueskyAccount: true,
             googleBusinessAccount: { include: { locations: { where: { selected: true, canPost: true } } } },
           },
         },
@@ -268,7 +271,7 @@ export class PostWorker implements OnModuleInit {
     const { user } = post
     const targetPlatforms = post.targetPlatforms ?? []
     const activeAccounts = user.socialAccounts.filter((acc) => {
-      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X' || acc.platform === 'TIKTOK') return false
+      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X' || acc.platform === 'TIKTOK' || acc.platform === 'BLUESKY') return false
       if (!targetPlatforms.length) return true
       return !!acc.platform && targetPlatforms.includes(acc.platform)
     })
@@ -279,13 +282,15 @@ export class PostWorker implements OnModuleInit {
     const wantsGoogle = !targetPlatforms.length || targetPlatforms.includes('GOOGLE_BUSINESS')
     const wantsX = !targetPlatforms.length || targetPlatforms.includes('X')
     const wantsTiktok = targetPlatforms.includes('TIKTOK')
+    const wantsBluesky = !targetPlatforms.length || targetPlatforms.includes('BLUESKY')
     const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
     const youtubeAccount = wantsYoutube ? user.youtubeAccount : undefined
     const googleLocations = wantsGoogle ? user.googleBusinessAccount?.locations ?? [] : []
     const xAccount = wantsX ? user.xAccount : undefined
     const tiktokAccount = wantsTiktok ? user.tiktokAccount : undefined
+    const blueskyAccount = wantsBluesky ? user.blueskyAccount : undefined
 
-    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !tiktokAccount) {
+    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !tiktokAccount && !blueskyAccount) {
       throw new Error(`User ${user.id} has no connected channels for the selected platforms`)
     }
 
@@ -307,8 +312,26 @@ export class PostWorker implements OnModuleInit {
       }]
     }
 
-    try {
-      if (linkedInAccount) {
+    const done = new Set(post.publishedPlatforms ?? [])
+    const failures: string[] = []
+    const step = async (platform: string, run: () => Promise<unknown>) => {
+      if (done.has(platform)) return
+      try {
+        await run()
+        done.add(platform)
+        await prisma.calendarPost.update({
+          where: { id: calendarPostId },
+          data: { publishedPlatforms: [...done] },
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Publish failed'
+        failures.push(`${platform}: ${message}`)
+      }
+    }
+
+    if (linkedInAccount || targetPlatforms.includes('LINKEDIN')) {
+      await step('LINKEDIN', async () => {
+        if (!linkedInAccount) throw new Error('Connect LinkedIn before posting to LinkedIn.')
         await this.linkedInService.publish({
           accessToken: linkedInAccount.accessToken,
           personId: linkedInAccount.platformUserId,
@@ -316,9 +339,12 @@ export class PostWorker implements OnModuleInit {
           mediaUrl,
           video: !!mediaUrl && (mediaUrl.split('?')[0].toLowerCase().endsWith('.mp4') || !!post.reel),
         })
-      }
+      })
+    }
 
-      if (youtubeAccount) {
+    if (youtubeAccount || targetPlatforms.includes('YOUTUBE')) {
+      await step('YOUTUBE', async () => {
+        if (!youtubeAccount) throw new Error('Connect YouTube before posting to YouTube.')
         const videoUrl = post.youtubeVideoUrl || (post.reel?.file ? mediaUrl : undefined)
         await this.youtubeService.publishForUser(user.id, container.content, videoUrl, {
           title: post.youtubeTitle || undefined,
@@ -327,23 +353,40 @@ export class PostWorker implements OnModuleInit {
           madeForKids: post.youtubeMadeForKids,
           isShort: post.youtubeIsShort,
         })
-      }
+      })
+    }
 
-      if (googleLocations.length) {
+    if (googleLocations.length || targetPlatforms.includes('GOOGLE_BUSINESS')) {
+      await step('GOOGLE_BUSINESS', async () => {
+        if (!googleLocations.length) throw new Error('Choose a Google Business location before posting.')
         await this.googleBusinessService.publishForUser(user.id, container.content, post.reel ? undefined : mediaUrl)
-      }
+      })
+    }
 
-      if (xAccount) {
+    if (xAccount || targetPlatforms.includes('X')) {
+      await step('X', async () => {
+        if (!xAccount) throw new Error('Connect X before posting to X.')
         await this.xService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined)
-      }
+      })
+    }
 
-      if (tiktokAccount) {
-        await this.tiktokService.publishForUser(user.id, container.content, mediaUrl)
-      }
+    if (tiktokAccount || targetPlatforms.includes('TIKTOK')) {
+      await step('TIKTOK', async () => {
+        if (!tiktokAccount) throw new Error('Connect TikTok before posting to TikTok.')
+        throw new Error('Post TikTok from Custom posting so you can choose who can watch it.')
+      })
+    }
 
-      let responseData: unknown = null
-      if (outstandAccountIds.length) {
-        const response = await axios.post(
+    if (blueskyAccount || targetPlatforms.includes('BLUESKY')) {
+      await step('BLUESKY', async () => {
+        if (!blueskyAccount) throw new Error('Connect Bluesky before posting to Bluesky.')
+        await this.blueskyService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined)
+      })
+    }
+
+    if (outstandAccountIds.length) {
+      await step('OUTSTAND', async () => {
+        await axios.post(
           `${this.outstandBaseUrl}/posts/`,
           {
             accounts: outstandAccountIds,
@@ -357,10 +400,14 @@ export class PostWorker implements OnModuleInit {
             },
           }
         )
-        responseData = response.data
-      }
+      })
+    }
 
-      // 5. Explicitly flip state tracking status flags to POSTED upon remote delivery completion
+    if (failures.length) {
+      throw new Error(failures.join(' '))
+    }
+
+    try {
       await prisma.calendarPost.update({
         where: { id: calendarPostId },
         data: { status: 'POSTED' },
@@ -392,6 +439,9 @@ export class PostWorker implements OnModuleInit {
         if (tiktokAccount) {
           publishedRows.push({ platform: 'TIKTOK', accountName: tiktokAccount.username ? `@${tiktokAccount.username}` : 'TikTok', postedAt })
         }
+        if (blueskyAccount) {
+          publishedRows.push({ platform: 'BLUESKY', accountName: blueskyAccount.handle ? `@${blueskyAccount.handle}` : 'Bluesky', postedAt })
+        }
         const platformRows = buildPlatformRowsHtml(publishedRows)
 
         await this.brevoService.sendPostPublishedEmail(
@@ -403,7 +453,7 @@ export class PostWorker implements OnModuleInit {
         })
       }
 
-      return responseData
+      return { publishedPlatforms: [...done] }
 
     } catch (error) {
       // Any failed request to Outstand (rejected or unreachable) counts toward

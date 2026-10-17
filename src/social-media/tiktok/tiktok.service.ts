@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import axios from 'axios';
 import { prisma } from '../../lib/prisma';
 import { RedisService } from '../../common/redis/redis.service';
+import { withRefreshLock } from '../oauth-refresh-lock';
 import { TiktokOptionsDto } from '../../outstand/dto/tiktok-options.dto';
 
 const SCOPES = 'user.info.basic,user.info.profile,user.info.stats,video.list,video.publish,video.upload';
@@ -37,7 +38,7 @@ export class TiktokService {
     const state = randomBytes(16).toString('base64url');
     await this.redisService.getClient().set(
       `tiktok:oauth:${state}`,
-      JSON.stringify({ userId, token: shoutlyToken }),
+      JSON.stringify({ userId }),
       { EX: 600 },
     );
     const params = new URLSearchParams({
@@ -50,18 +51,22 @@ export class TiktokService {
     return `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`;
   }
 
-  async takePending(state: string): Promise<{ userId: string; token: string } | null> {
+  async takePending(state: string): Promise<{ userId: string } | null> {
     const key = `tiktok:oauth:${state}`;
     const raw = await this.redisService.getClient().get(key);
     if (!raw) return null;
     await this.redisService.getClient().del(key);
-    const parsed = JSON.parse(raw) as { userId?: string; token?: string };
-    if (!parsed.userId || !parsed.token) return null;
-    return { userId: parsed.userId, token: parsed.token };
+    const parsed = JSON.parse(raw) as { userId?: string };
+    if (!parsed.userId) return null;
+    return { userId: parsed.userId };
   }
 
   async connectFromCode(code: string, userId: string) {
     const token = await this.exchangeCode(code);
+    const granted = new Set((token.scope || '').split(/[,\s]+/).filter(Boolean));
+    if (!granted.has('video.publish') || !granted.has('user.info.basic')) {
+      throw new BadRequestException('TikTok did not grant permission to post. Connect again and allow posting.');
+    }
     const profile = await this.fetchUser(token.access_token);
     const expiry = token.expires_in ? new Date(Date.now() + token.expires_in * 1000) : null;
     const refreshExpiry = token.refresh_expires_in ? new Date(Date.now() + token.refresh_expires_in * 1000) : null;
@@ -98,43 +103,14 @@ export class TiktokService {
     if (!account) {
       return { connected: false, expired: false, name: null, username: null, picture: null, followers: null };
     }
-    try {
-      const token = await this.freshToken(account);
-      const profile = await this.fetchUser(token);
-      if (profile) {
-        await prisma.tiktokAccount.update({
-          where: { userId },
-          data: {
-            openId: profile.open_id || account.openId,
-            unionId: profile.union_id ?? account.unionId,
-            username: profile.username ?? account.username,
-            displayName: profile.display_name ?? account.displayName,
-            avatarUrl: profile.avatar_url ?? account.avatarUrl,
-            followerCount: profile.follower_count != null ? String(profile.follower_count) : account.followerCount,
-            followingCount: profile.following_count != null ? String(profile.following_count) : account.followingCount,
-            likesCount: profile.likes_count != null ? String(profile.likes_count) : account.likesCount,
-            videoCount: profile.video_count != null ? String(profile.video_count) : account.videoCount,
-          },
-        });
-      }
-      return {
-        connected: true,
-        expired: false,
-        name: profile?.display_name ?? account.displayName,
-        username: profile?.username ?? account.username,
-        picture: profile?.avatar_url ?? account.avatarUrl,
-        followers: profile?.follower_count != null ? String(profile.follower_count) : account.followerCount,
-      };
-    } catch {
-      return {
-        connected: true,
-        expired: true,
-        name: account.displayName,
-        username: account.username,
-        picture: account.avatarUrl,
-        followers: account.followerCount,
-      };
-    }
+    return {
+      connected: true,
+      expired: !account.refreshToken,
+      name: account.displayName,
+      username: account.username,
+      picture: account.avatarUrl,
+      followers: account.followerCount,
+    };
   }
 
   async creator(userId: string): Promise<TikTokCreator> {
@@ -335,32 +311,36 @@ export class TiktokService {
 
   private async freshToken(account: { userId: string; accessToken: string; refreshToken: string | null; tokenExpiry: Date | null }) {
     if (!account.tokenExpiry || account.tokenExpiry.getTime() > Date.now() + 60_000) return account.accessToken;
-    if (!account.refreshToken) throw new BadRequestException('Connect TikTok again.');
-    const body = new URLSearchParams({
-      client_key: this.clientKey,
-      client_secret: this.clientSecret,
-      grant_type: 'refresh_token',
-      refresh_token: account.refreshToken,
+    return withRefreshLock(this.redisService, 'tiktok', account.userId, async () => {
+      const latest = await prisma.tiktokAccount.findUnique({ where: { userId: account.userId } });
+      if (!latest?.refreshToken) throw new BadRequestException('Connect TikTok again.');
+      if (!latest.tokenExpiry || latest.tokenExpiry.getTime() > Date.now() + 60_000) return latest.accessToken;
+      const body = new URLSearchParams({
+        client_key: this.clientKey,
+        client_secret: this.clientSecret,
+        grant_type: 'refresh_token',
+        refresh_token: latest.refreshToken,
+      });
+      const response = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', body.toString(), {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        validateStatus: () => true,
+      });
+      if (response.status >= 400 || !response.data?.access_token) {
+        throw new BadRequestException('Connect TikTok again.');
+      }
+      const expiry = response.data.expires_in ? new Date(Date.now() + response.data.expires_in * 1000) : null;
+      const refreshExpiry = response.data.refresh_expires_in ? new Date(Date.now() + response.data.refresh_expires_in * 1000) : null;
+      await prisma.tiktokAccount.update({
+        where: { userId: account.userId },
+        data: {
+          accessToken: response.data.access_token,
+          refreshToken: response.data.refresh_token || latest.refreshToken,
+          tokenExpiry: expiry,
+          refreshExpiry,
+        },
+      });
+      return response.data.access_token as string;
     });
-    const response = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', body.toString(), {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      validateStatus: () => true,
-    });
-    if (response.status >= 400 || !response.data?.access_token) {
-      throw new BadRequestException('Connect TikTok again.');
-    }
-    const expiry = response.data.expires_in ? new Date(Date.now() + response.data.expires_in * 1000) : null;
-    const refreshExpiry = response.data.refresh_expires_in ? new Date(Date.now() + response.data.refresh_expires_in * 1000) : null;
-    await prisma.tiktokAccount.update({
-      where: { userId: account.userId },
-      data: {
-        accessToken: response.data.access_token,
-        refreshToken: response.data.refresh_token || account.refreshToken,
-        tokenExpiry: expiry,
-        refreshExpiry,
-      },
-    });
-    return response.data.access_token as string;
   }
 
   private async fetchUser(accessToken: string) {
