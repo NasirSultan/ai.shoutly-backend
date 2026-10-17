@@ -12,6 +12,7 @@ import { LinkedInService } from '../social-media/linkedin/linkedin.service';
 import { YoutubeService } from '../social-media/youtube/youtube.service';
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service';
 import { XService } from '../social-media/x/x.service';
+import { TiktokService } from '../social-media/tiktok/tiktok.service';
 
 // Generic, publicly-documented social-media-marketing benchmark posting
 // windows per platform — NOT computed from any individual user's own data.
@@ -68,6 +69,7 @@ export class AutopostService {
     private readonly youtubeService: YoutubeService,
     private readonly googleBusinessService: GoogleBusinessService,
     private readonly xService: XService,
+    private readonly tiktokService: TiktokService,
   ) {
     if (!this.outstandApiKey) {
       console.warn('Warning: OUTSTAND_API_KEY is not defined in your environment variables.');
@@ -181,8 +183,8 @@ export class AutopostService {
   }
 
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
-    if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x') {
-      throw new BadRequestException('Connect YouTube, Google Business, and X from their own buttons.');
+    if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x' || dto.platform === 'tiktok') {
+      throw new BadRequestException('Connect YouTube, Google Business, X, and TikTok from their own buttons.');
     }
     try {
       console.log('Outstand Config:', { url: this.outstandBaseUrl, hasKey: !!this.outstandApiKey, platform: dto.platform });
@@ -484,7 +486,8 @@ export class AutopostService {
     const wantsYoutube = platforms.includes('YOUTUBE');
     const wantsGoogle = platforms.includes('GOOGLE_BUSINESS');
     const wantsX = platforms.includes('X');
-    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X');
+    const wantsTiktok = platforms.includes('TIKTOK');
+    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X' && p !== 'TIKTOK');
 
     const verifiedAccounts = outstandPlatforms.length
       ? await this.prisma.socialAccount.findMany({
@@ -514,6 +517,9 @@ export class AutopostService {
     const xAccount = wantsX
       ? await this.prisma.xAccount.findUnique({ where: { userId } })
       : null;
+    const tiktokAccount = wantsTiktok
+      ? await this.prisma.tiktokAccount.findUnique({ where: { userId } })
+      : null;
 
     if (wantsLinkedIn && !linkedInAccount) {
       throw new BadRequestException('Connect your LinkedIn profile before posting to LinkedIn.');
@@ -527,8 +533,11 @@ export class AutopostService {
     if (wantsX && !xAccount) {
       throw new BadRequestException('Connect X before posting to X.');
     }
+    if (wantsTiktok && !tiktokAccount) {
+      throw new BadRequestException('Connect TikTok before posting to TikTok.');
+    }
 
-    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !verifiedAccounts.length) {
+    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !tiktokAccount && !verifiedAccounts.length) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
@@ -593,6 +602,10 @@ export class AutopostService {
 
       if (xAccount) {
         await this.xService.publishForUser(userId, dto.content, dto.mediaUrls);
+      }
+
+      if (tiktokAccount) {
+        await this.tiktokService.publishForUser(userId, dto.content, dto.mediaUrls?.[0], dto.tiktok);
       }
 
       let outstandPostId: string | null = null;
@@ -675,7 +688,7 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
     }
 
-    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X');
+    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X' && p !== 'TIKTOK');
     if (!outstandPlatforms.length) {
       return { success: true, scheduled: [], failed: [] };
     }

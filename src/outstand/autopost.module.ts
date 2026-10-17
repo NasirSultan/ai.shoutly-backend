@@ -7,9 +7,10 @@ import { LinkedInModule } from '../social-media/linkedin/linkedin.module';
 import { YoutubeModule } from '../social-media/youtube/youtube.module';
 import { GoogleBusinessModule } from '../social-media/google-business/google-business.module';
 import { XModule } from '../social-media/x/x.module';
+import { TiktokModule } from '../social-media/tiktok/tiktok.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule],
+  imports: [AuthModule, RedisModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, TiktokModule],
   controllers: [AutopostController],
   providers: [AutopostService],
   exports: [AutopostService],

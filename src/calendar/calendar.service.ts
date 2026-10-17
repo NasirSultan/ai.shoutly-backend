@@ -680,7 +680,7 @@ async getPostDetails(userId: string, postId: string) {
         platforms = post.targetPlatforms.map((p) => p.toLowerCase())
       } else {
         const accounts = await prisma.socialAccount.findMany({
-          where: { userId, status: 'active', platform: { notIn: ['YOUTUBE', 'GOOGLE_BUSINESS', 'X'] } },
+          where: { userId, status: 'active', platform: { notIn: ['YOUTUBE', 'GOOGLE_BUSINESS', 'X', 'TIKTOK'] } },
         })
         platforms = accounts.map((a) => a.platform?.toLowerCase()).filter((platform): platform is string => !!platform)
         if (await prisma.youtubeAccount.findUnique({ where: { userId } })) platforms.push('youtube')
