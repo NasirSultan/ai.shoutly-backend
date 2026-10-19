@@ -24,6 +24,12 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1001.0",
     "@google/genai": "^1.46.0",
+    "@langchain/core": "^1.2.18",
+    "@langchain/langgraph": "^1.5.1",
+    "@langchain/langgraph-checkpoint": "^1.2.0",
+    "@langchain/langgraph-checkpoint-postgres": "^1.1.0",
+    "@langchain/openai": "^1.6.2",
+    "@langfuse/langchain": "^5.14.0",
     "@langfuse/otel": "^5.11.1",
     "@langfuse/tracing": "^5.11.1",
     "@nestjs/common": "^10.0.0",
@@ -63,7 +69,8 @@
     "redis": "^5.10.0",
     "reflect-metadata": "^0.1.13",
     "rxjs": "^7.8.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",

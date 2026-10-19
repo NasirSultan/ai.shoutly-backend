@@ -7,5 +7,6 @@ import { AuthModule } from '../auth/auth.module';
   imports: [AuthModule],
   controllers: [AdminDashboardController],
   providers: [AdminDashboardService],
+  exports: [AdminDashboardService],
 })
 export class AdminDashboardModule {}

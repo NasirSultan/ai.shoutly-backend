@@ -39,6 +39,7 @@ import { WebsiteWatcherModule } from './website-watcher/website-watcher.module'
 import { MetaModule } from './meta/meta.module'
 import { MonitoringCoreModule } from './monitoring/monitoring-core.module'
 import { MonitoringModule } from './monitoring/monitoring.module'
+import { AdminAgentModule } from './admin-agent/admin-agent.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), EventEmitterModule.forRoot(),LogoOverlayModule, FacebookModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, IndustriesModule, AuthModule,
@@ -71,6 +72,7 @@ import { MonitoringModule } from './monitoring/monitoring.module'
   // Global: provides MonitoringService to BrevoService, crons and workers.
   MonitoringCoreModule,
   MonitoringModule,
+  AdminAgentModule,
 ],
   controllers: [AppController],
   providers: [
