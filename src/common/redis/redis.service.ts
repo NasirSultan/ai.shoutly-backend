@@ -9,6 +9,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     this.client = createClient({ url: process.env.REDIS_URL })
+    // Without a listener, a dropped connection (e.g. Upstash closing an idle
+    // socket) crashes the process; with one, the client reconnects by itself.
+    this.client.on('error', (err) => console.error('❌ Redis connection error:', err.message))
     await this.client.connect()
   }
 
