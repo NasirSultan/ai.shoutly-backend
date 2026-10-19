@@ -11,7 +11,7 @@ export const AGENT_MODEL = 'deepseek-chat'
 
 // How many earlier messages are sent to the model each turn. Older ones stay
 // saved in the chat; they just stop costing tokens.
-const MAX_HISTORY_MESSAGES = 30
+const MAX_HISTORY_MESSAGES = 10
 
 export interface ModelUsage {
   promptTokens: number
@@ -26,12 +26,14 @@ export interface AdminAgentGraphOptions {
 }
 
 // Keeps the last messages, starting at a user message so the model never sees
-// a tool result without the tool call that asked for it.
+// a tool result without the tool call that asked for it. If the current
+// question alone is longer than the limit (many tool calls), it's kept whole.
 function recentMessages(messages: BaseMessage[]) {
   if (messages.length <= MAX_HISTORY_MESSAGES) return messages
   const start = messages.length - MAX_HISTORY_MESSAGES
   const firstUserMessage = messages.findIndex((m, i) => i >= start && m.getType() === 'human')
-  return firstUserMessage === -1 ? messages.slice(start) : messages.slice(firstUserMessage)
+  const from = firstUserMessage !== -1 ? firstUserMessage : messages.findLastIndex((m) => m.getType() === 'human')
+  return messages.slice(Math.max(from, 0))
 }
 
 //   START -> agent --(tool calls?)--> tools -> agent ... -> END
