@@ -13,8 +13,6 @@ export interface AgentContext {
   threadId: string
 }
 
-// AdminAgentService puts the admin and thread id into every run's config;
-// nodes and tools read them back from there.
 export function getAgentContext(config?: RunnableConfig): AgentContext {
   const admin = config?.configurable?.admin as AgentAdmin | undefined
   const threadId = config?.configurable?.thread_id as string | undefined
@@ -22,8 +20,6 @@ export function getAgentContext(config?: RunnableConfig): AgentContext {
   return { admin, threadId }
 }
 
-// Long tool results cost tokens and bury the answer; the model is told to
-// narrow its filter instead.
 const MAX_RESULT_CHARS = 12_000
 
 export interface ToolDefinition<S extends z.ZodObject<any>> {
@@ -33,8 +29,6 @@ export interface ToolDefinition<S extends z.ZodObject<any>> {
   run: (input: z.infer<S>, ctx: AgentContext) => Promise<unknown>
 }
 
-// Every agent tool goes through here: the call is written to the audit log,
-// and the result is returned as (size-capped) JSON.
 export function defineTool<S extends z.ZodObject<any>>(auditLog: AuditLogService, def: ToolDefinition<S>) {
   return tool(
     async (input: z.infer<S>, config?: RunnableConfig) => {

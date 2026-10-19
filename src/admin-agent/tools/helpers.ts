@@ -5,7 +5,6 @@ const DAY_MS = 24 * 60 * 60 * 1000
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// Shared input fields, so every tool describes them the same way to the model.
 export const zFrom = z.string().optional().describe('Start date, YYYY-MM-DD (UTC), inclusive. Default: 30 days ago.')
 export const zTo = z.string().optional().describe('End date, YYYY-MM-DD (UTC), inclusive. Default: today.')
 export const zLimit = z.number().int().min(1).max(50).optional().describe('Max rows to return. Default 10.')
@@ -13,7 +12,6 @@ export const zUser = z.string().describe("The user's email address or user id.")
 
 export const DEFAULT_LIMIT = 10
 
-// { gte, lte } for a Prisma date filter. `to` covers that whole day.
 export function dateRange(from?: string, to?: string, defaultDays = 30) {
   const parse = (value: string, field: string) => {
     if (!DATE_RE.test(value)) throw new Error(`${field} must be YYYY-MM-DD, got "${value}"`)
@@ -29,8 +27,6 @@ export function describeRange(range: { gte: Date; lte: Date }) {
   return { from: range.gte.toISOString().slice(0, 10), to: range.lte.toISOString().slice(0, 10) }
 }
 
-// Finds a user from an email or an id. Throws (and the model sees the
-// message) when there's no such user.
 export async function resolveUser(userIdOrEmail: string) {
   const value = userIdOrEmail.trim()
   const user = await prisma.user.findFirst({

@@ -4,8 +4,6 @@ import { defineTool } from './define-tool'
 import { DEFAULT_LIMIT, clip, dateRange, describeRange, zFrom, zLimit, zTo } from './helpers'
 import type { ToolDeps } from './index'
 
-// Leads, contact messages, demo bookings, industry requests and newsletter:
-// things people send in from the website. Free-text fields are clipped.
 export function inboxTools({ auditLog }: ToolDeps) {
   return [
     defineTool(auditLog, {

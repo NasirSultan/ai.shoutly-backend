@@ -1,7 +1,5 @@
 import type { AgentAdmin } from '../tools/define-tool'
 
-// Rebuilt on every model call (not stored in the chat), so "today" is always
-// right even when an old chat is continued.
 export function buildSystemPrompt(admin: AgentAdmin) {
   const today = new Date().toISOString().slice(0, 10)
 

@@ -9,8 +9,6 @@ import { buildSystemPrompt } from './prompt'
 
 export const AGENT_MODEL = 'deepseek-chat'
 
-// How many earlier messages are sent to the model each turn. Older ones stay
-// saved in the chat; they just stop costing tokens.
 const MAX_HISTORY_MESSAGES = 10
 
 export interface ModelUsage {
@@ -25,9 +23,6 @@ export interface AdminAgentGraphOptions {
   onModelError: (error: unknown) => void
 }
 
-// Keeps the last messages, starting at a user message so the model never sees
-// a tool result without the tool call that asked for it. If the current
-// question alone is longer than the limit (many tool calls), it's kept whole.
 function recentMessages(messages: BaseMessage[]) {
   if (messages.length <= MAX_HISTORY_MESSAGES) return messages
   const start = messages.length - MAX_HISTORY_MESSAGES
@@ -36,9 +31,7 @@ function recentMessages(messages: BaseMessage[]) {
   return messages.slice(Math.max(from, 0))
 }
 
-//   START -> agent --(tool calls?)--> tools -> agent ... -> END
 export function buildAdminAgentGraph({ tools, checkpointer, onModelUsage, onModelError }: AdminAgentGraphOptions) {
-  // DeepSeek speaks the OpenAI API, so the OpenAI chat model works with a different base URL.
   const model = new ChatOpenAI({
     model: AGENT_MODEL,
     apiKey: process.env.DEEPSEEK_API_KEY,

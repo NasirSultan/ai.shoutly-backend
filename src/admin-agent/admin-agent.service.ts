@@ -26,10 +26,8 @@ import { buildAdminAgentTools } from './tools'
 import { AgentAdmin } from './tools/define-tool'
 import { AdminAgentChatDto } from './dto/admin-agent-chat.dto'
 
-// Checkpoint tables live in their own Postgres schema so Prisma (which only
-// manages "public") never sees them or tries to drop them.
 const CHECKPOINT_SCHEMA = 'langgraph'
-// Model -> tools -> model rounds per message, so a confused model can't loop forever.
+
 const RECURSION_LIMIT = 16
 const DAILY_MESSAGE_LIMIT = 200
 const TITLE_LENGTH = 80
@@ -64,12 +62,8 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     private readonly adminDashboard: AdminDashboardService,
   ) {}
 
-  // A checkpointer failure must not stop the app from starting: the rest of
-  // the API keeps working and the agent routes answer 503 until it's fixed.
   async onModuleInit() {
     try {
-      // DIRECT_URL is the session pooler; the transaction pooler in DATABASE_URL
-      // doesn't suit the checkpointer's transactions.
       this.pool = new Pool({ connectionString: process.env.DIRECT_URL || process.env.DATABASE_URL, max: 3 })
       this.pool.on('error', (err) => this.logger.error(`Checkpoint pool error: ${err.message}`))
       this.checkpointer = new PostgresSaver(this.pool, undefined, { schema: CHECKPOINT_SCHEMA })
@@ -103,8 +97,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     await this.pool?.end().catch(() => undefined)
   }
 
-  // ---- Chat ----
-
   async chat(admin: AgentAdmin, dto: AdminAgentChatDto) {
     const turn = await this.prepareTurn(admin, dto)
     const toolsUsed: string[] = []
@@ -113,7 +105,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     try {
       const result = await this.getGraph().invoke(turn.input, turn.config)
       const messages: BaseMessage[] = result.messages
-      // Tools called in this turn = tool calls after the message just sent.
       const turnStart = messages.findLastIndex((m) => m.getType() === 'human')
       for (const m of messages.slice(turnStart + 1)) {
         for (const call of (m as any).tool_calls ?? []) toolsUsed.push(call.name)
@@ -126,9 +117,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     return { threadId: turn.threadId, answer, toolsUsed }
   }
 
-  // Server-sent events: {type:'thread'} first, then {type:'tool'} as tools run
-  // and {type:'text'} answer chunks, then [DONE]. Call prepareTurn first, so
-  // its errors become a normal HTTP error before the stream starts.
   async *streamTurn(turn: Turn, signal: AbortSignal) {
     yield sse({ type: 'thread', threadId: turn.threadId })
 
@@ -158,7 +146,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     yield 'data: [DONE]\n\n'
   }
 
-  // Rate limit, then find or create the chat. Throws HTTP errors.
   async prepareTurn(admin: AgentAdmin, dto: AdminAgentChatDto): Promise<Turn> {
     this.getGraph()
     await this.assertDailyLimit(admin.id)
@@ -185,8 +172,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  // ---- Saved chats ----
-
   listThreads(admin: AgentAdmin) {
     return prisma.adminAgentThread.findMany({
       where: { adminId: admin.id },
@@ -196,8 +181,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     })
   }
 
-  // The chat as the admin saw it: their messages and the assistant's answers,
-  // with the tools used for each answer. Raw tool results are left out.
   async getThread(admin: AgentAdmin, threadId: string) {
     const thread = await this.findOwnThread(admin.id, threadId)
     const state = await this.getGraph().getState({ configurable: { thread_id: threadId } })
@@ -228,8 +211,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     return { success: true, id: threadId }
   }
 
-  // ---- Helpers ----
-
   private getGraph() {
     if (!this.graph) throw new ServiceUnavailableException('The admin assistant is not available right now')
     return this.graph
@@ -240,7 +221,6 @@ export class AdminAgentService implements OnModuleInit, OnModuleDestroy {
     return this.checkpointer
   }
 
-  // Admins only ever see their own chats.
   private async findOwnThread(adminId: string, threadId: string) {
     const thread = await prisma.adminAgentThread.findFirst({
       where: { id: threadId, adminId },

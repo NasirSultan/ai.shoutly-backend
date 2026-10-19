@@ -28,20 +28,16 @@ const adminOf = (req: RequestWithUser): AgentAdmin => ({ id: req.user.id, email:
 export class AdminAgentController {
   constructor(private readonly adminAgent: AdminAgentService) {}
 
-  // Returns { threadId, answer, toolsUsed } once the answer is ready.
   @Post('chat')
   @HttpCode(HttpStatus.OK)
   chat(@Body(ValidationPipe) dto: AdminAgentChatDto, @Req() req: RequestWithUser) {
     return this.adminAgent.chat(adminOf(req), dto)
   }
 
-  // Same, streamed as server-sent events (see AdminAgentService.streamTurn).
   @Post('chat/stream')
   async streamChat(@Body(ValidationPipe) dto: AdminAgentChatDto, @Req() req: RequestWithUser, @Res() res: Response) {
-    // Before any header is sent, so a 404/429 is still delivered as one.
     const turn = await this.adminAgent.prepareTurn(adminOf(req), dto)
 
-    // Stop the run (and its token spend) if the admin closes the page.
     const abort = new AbortController()
     res.on('close', () => {
       if (!res.writableEnded) abort.abort()

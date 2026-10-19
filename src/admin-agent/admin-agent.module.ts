@@ -8,8 +8,6 @@ import { AdminDashboardModule } from '../admin-dashboard/admin-dashboard.module'
 import { AdminAgentController } from './admin-agent.controller'
 import { AdminAgentService } from './admin-agent.service'
 
-// Admin chatbot: a LangGraph agent that answers admin questions with
-// read-only tools over the platform's data. Chats are saved per admin.
 @Module({
   imports: [AuthModule, AuditLogModule, AiUsageLogModule, RedisModule, MonitoringModule, AdminDashboardModule],
   controllers: [AdminAgentController],

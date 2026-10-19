@@ -13,7 +13,6 @@ export function systemTools({ auditLog, adminMonitoring, adminDashboard }: ToolD
       schema: z.object({}),
       run: async () => {
         const o = await adminDashboard.getOverview()
-        // The 30-day trend arrays are for charts; they'd only cost tokens here.
         return {
           users: { total: o.users.total, newLast30Days: o.users.newLast30Days },
           subscriptions: o.subscriptions,
@@ -72,7 +71,6 @@ export function systemTools({ auditLog, adminMonitoring, adminDashboard }: ToolD
           }),
         ])
 
-        // For the per-user view, swap ids for names the admin recognises.
         const userIds = groupBy === 'user' ? groups.map((g) => g.userId).filter((id): id is string => !!id) : []
         const users = userIds.length
           ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, email: true } })

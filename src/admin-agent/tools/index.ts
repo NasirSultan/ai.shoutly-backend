@@ -14,8 +14,6 @@ export interface ToolDeps {
   adminDashboard: AdminDashboardService
 }
 
-// All tools are read-only. Each area lives in its own file so it can later
-// become its own specialist agent, or be given only to the matching admin role.
 export function buildAdminAgentTools(deps: ToolDeps) {
   return [
     ...systemTools(deps),
