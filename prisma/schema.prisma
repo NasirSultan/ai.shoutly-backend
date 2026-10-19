@@ -740,3 +740,16 @@ model DemoBooking {
   @@index([status])
   @@index([slotTime])
 }
+
+// One admin-agent chat, for listing chats and checking who owns them. The
+// messages themselves are saved by the LangGraph checkpointer in the separate
+// "langgraph" Postgres schema (see src/admin-agent/admin-agent.service.ts).
+model AdminAgentThread {
+  id        String   @id @default(uuid())
+  adminId   String
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([adminId, updatedAt])
+}

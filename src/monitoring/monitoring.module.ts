@@ -17,5 +17,6 @@ import { WatchdogService } from './watchdog.service'
   imports: [AuthModule, AuditLogModule, BrevoModule, RedisModule],
   controllers: [HealthController, AdminMonitoringController],
   providers: [AlertService, HealthService, PublishQueueService, WatchdogService, AdminMonitoringService],
+  exports: [AdminMonitoringService],
 })
 export class MonitoringModule {}
