@@ -12,8 +12,7 @@ export class PostQueue implements OnModuleInit {
     this.queue = new Queue('facebook-post', {
       connection: this.redisService.createIORedisClient(),
       defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
+        attempts: 1,
         removeOnComplete: true,
         removeOnFail: false,
       },
