@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator'
+import { IsNotEmpty, IsString, IsUUID, MaxLength, ValidateIf } from 'class-validator'
 
 export class AdminAgentChatDto {
   @IsString()
