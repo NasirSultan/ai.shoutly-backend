@@ -9,6 +9,8 @@ import { RedisService } from '../common/redis/redis.service'
 import { BrevoService } from 'src/brevo/brevo.service'
 import { TwoFactorService } from './two-factor/two-factor.service'
 import { AuditLogService } from '../audit-log/audit-log.service'
+import { EventEmitter2 } from '@nestjs/event-emitter'
+import { UserSignedUpEvent } from '../events/user-signed-up.event'
 
 @Injectable()
 export class AuthService {
@@ -17,7 +19,8 @@ export class AuthService {
       private redisService: RedisService,
         private brevoService: BrevoService,
           private twoFactorService: TwoFactorService,
-            private auditLogService: AuditLogService
+            private auditLogService: AuditLogService,
+              private eventEmitter: EventEmitter2
 
   ) {}
 
@@ -101,6 +104,12 @@ async register(name: string, email: string, role?: UserRole) {
         data: { otp: null, otpExpiresAt: null },
       })
       await client.del(key)
+
+      // No password yet means this is the first verification of a new signup.
+      if (!user.password) {
+        this.eventEmitter.emit('user.signed-up', new UserSignedUpEvent(user.name, user.email, 'Email', new Date()))
+      }
+
       return { message: 'OTP verified successfully' }
     } catch (error) {
       if (error instanceof NotFoundException || error instanceof BadRequestException) throw error

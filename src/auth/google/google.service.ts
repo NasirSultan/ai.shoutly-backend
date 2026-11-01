@@ -2,12 +2,14 @@ import { Injectable, BadRequestException } from '@nestjs/common'
 import { OAuth2Client } from 'google-auth-library'
 import { PrismaService } from '../../lib/prisma.service'
 import { JwtService } from '@nestjs/jwt'
+import { EventEmitter2 } from '@nestjs/event-emitter'
+import { UserSignedUpEvent } from '../../events/user-signed-up.event'
 
 @Injectable()
 export class GoogleService {
   private client: OAuth2Client
 
-  constructor(private prisma: PrismaService, private jwtService: JwtService) {
+  constructor(private prisma: PrismaService, private jwtService: JwtService, private eventEmitter: EventEmitter2) {
     this.client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID)
   }
 
@@ -33,6 +35,8 @@ export class GoogleService {
     const payload = await this.verifyGoogleToken(idToken)
     if (!payload.email) throw new BadRequestException('Google account has no email')
 
+    const existing = await this.prisma.user.findUnique({ where: { email: payload.email }, select: { id: true } })
+
     const user = await this.prisma.user.upsert({
       where: { email: payload.email },
       update: {
@@ -44,6 +48,10 @@ export class GoogleService {
         password: '',
       },
     })
+
+    if (!existing) {
+      this.eventEmitter.emit('user.signed-up', new UserSignedUpEvent(user.name, user.email, 'Google', new Date()))
+    }
 
     const token = this.jwtService.sign({
       sub: user.id,

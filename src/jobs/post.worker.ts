@@ -177,7 +177,7 @@ export class PostWorker implements OnModuleInit {
     this.worker.on('failed', async (job, err) => {
       console.error(`[Outstand Worker] Job ${job?.id} structural processing failed:`, err.message)
 
-      if (job && job.attemptsMade >= (job.opts.attempts || 3)) {
+      if (job && job.attemptsMade >= (job.opts.attempts || 1)) {
         // Only a post still in flight can fail. Matching on POSTING means a
         // stray duplicate job can never overwrite a post that another job
         // already published (POSTED) or that was skipped (SKIP).

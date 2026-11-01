@@ -26,6 +26,7 @@ describe('AuthService', () => {
       brevoService as any,
       twoFactorService as any,
       auditLogService as any,
+      { emit: jest.fn() } as any,
     )
   })
 

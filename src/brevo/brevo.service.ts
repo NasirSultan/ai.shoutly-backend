@@ -53,6 +53,23 @@ export class BrevoService {
     })
   }
 
+  async sendNewUserAlert(to: string[], user: { name: string; email: string; method: string; signedUpAt: string }) {
+    const senderEmail = this.configService.get<string>('BREVO_SENDER_EMAIL')
+    const senderName = this.configService.get<string>('BREVO_SENDER_NAME')
+
+    if (!senderEmail || !senderName) {
+      throw new Error('Brevo sender config missing')
+    }
+
+    await this.send({
+      sender: { email: senderEmail, name: senderName },
+      to: to.map((email) => ({ email })),
+      subject: `New user signed up: ${user.name}`,
+      params: user,
+      templateId: 11,
+    })
+  }
+
   async sendOtpEmail(toEmail: string, name: string, otp: string) {
     const senderEmail = this.configService.get<string>('BREVO_SENDER_EMAIL')
     const senderName = this.configService.get<string>('BREVO_SENDER_NAME')
