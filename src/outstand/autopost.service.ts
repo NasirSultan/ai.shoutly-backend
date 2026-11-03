@@ -12,6 +12,11 @@ import { LinkedInService } from '../social-media/linkedin/linkedin.service';
 import { YoutubeService } from '../social-media/youtube/youtube.service';
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service';
 import { XService } from '../social-media/x/x.service';
+import { FacebookService } from '../social-media/facebook/facebook.service';
+
+// Platforms we publish to with our own API integrations. Everything else
+// still goes through Outstand.
+const DIRECT_PLATFORMS: SocialPlatform[] = ['LINKEDIN', 'YOUTUBE', 'GOOGLE_BUSINESS', 'X', 'FACEBOOK'];
 
 // Generic, publicly-documented social-media-marketing benchmark posting
 // windows per platform — NOT computed from any individual user's own data.
@@ -68,6 +73,7 @@ export class AutopostService {
     private readonly youtubeService: YoutubeService,
     private readonly googleBusinessService: GoogleBusinessService,
     private readonly xService: XService,
+    private readonly facebookService: FacebookService,
   ) {
     if (!this.outstandApiKey) {
       console.warn('Warning: OUTSTAND_API_KEY is not defined in your environment variables.');
@@ -181,8 +187,8 @@ export class AutopostService {
   }
 
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
-    if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x') {
-      throw new BadRequestException('Connect YouTube, Google Business, and X from their own buttons.');
+    if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x' || dto.platform === 'facebook') {
+      throw new BadRequestException('Connect Facebook, YouTube, Google Business, and X from their own buttons.');
     }
     try {
       console.log('Outstand Config:', { url: this.outstandBaseUrl, hasKey: !!this.outstandApiKey, platform: dto.platform });
@@ -265,7 +271,28 @@ export class AutopostService {
 
     const byPlatform: Record<string, any[]> = {};
     for (const acc of accounts) {
+      // Old Outstand Facebook rows are no longer used for posting — the
+      // direct Facebook Pages below are the source of truth.
+      if (acc.platform === 'FACEBOOK') continue;
       (byPlatform[acc.platform] ||= []).push(acc);
+    }
+
+    const facebookPages = await this.prisma.facebookPage.findMany({
+      where: { facebookAccount: { userId } },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (facebookPages.length) {
+      byPlatform.FACEBOOK = facebookPages.map((page) => ({
+        id: page.id,
+        outstandAccountId: null,
+        username: page.pageName || page.pageId,
+        avatarUrl: null,
+        status: 'active',
+        updatedAt: page.updatedAt,
+        defaultBoardId: null,
+        defaultBoardName: null,
+        isDefault: page.isDefault,
+      }));
     }
 
     // Kept in sync with normalizePlatform()'s map above
@@ -300,6 +327,8 @@ export class AutopostService {
             // Pinterest only — null for every other platform.
             defaultBoardId: acc.defaultBoardId,
             defaultBoardName: acc.defaultBoardName,
+            // Facebook only — the Page posts are sent to.
+            ...(platform === 'FACEBOOK' ? { isDefault: acc.isDefault } : {}),
           })),
       };
     });
@@ -484,7 +513,8 @@ export class AutopostService {
     const wantsYoutube = platforms.includes('YOUTUBE');
     const wantsGoogle = platforms.includes('GOOGLE_BUSINESS');
     const wantsX = platforms.includes('X');
-    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X');
+    const wantsFacebook = platforms.includes('FACEBOOK');
+    const outstandPlatforms = platforms.filter((p) => !DIRECT_PLATFORMS.includes(p));
 
     const verifiedAccounts = outstandPlatforms.length
       ? await this.prisma.socialAccount.findMany({
@@ -514,7 +544,11 @@ export class AutopostService {
     const xAccount = wantsX
       ? await this.prisma.xAccount.findUnique({ where: { userId } })
       : null;
+    const hasFacebook = wantsFacebook ? await this.facebookService.hasPostablePage(userId) : false;
 
+    if (wantsFacebook && !hasFacebook) {
+      throw new BadRequestException('Connect a Facebook Page before posting to Facebook.');
+    }
     if (wantsLinkedIn && !linkedInAccount) {
       throw new BadRequestException('Connect your LinkedIn profile before posting to LinkedIn.');
     }
@@ -528,7 +562,7 @@ export class AutopostService {
       throw new BadRequestException('Connect X before posting to X.');
     }
 
-    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !verifiedAccounts.length) {
+    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !hasFacebook && !verifiedAccounts.length) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
@@ -593,6 +627,10 @@ export class AutopostService {
 
       if (xAccount) {
         await this.xService.publishForUser(userId, dto.content, dto.mediaUrls);
+      }
+
+      if (hasFacebook) {
+        await this.facebookService.publishForUser(userId, dto.content, dto.mediaUrls);
       }
 
       let outstandPostId: string | null = null;
@@ -675,19 +713,25 @@ export class AutopostService {
       throw new BadRequestException('YouTube requires a video file for every scheduled post — pass its URL in mediaUrls.');
     }
 
-    const outstandPlatforms = platforms.filter((p) => p !== 'LINKEDIN' && p !== 'YOUTUBE' && p !== 'GOOGLE_BUSINESS' && p !== 'X');
-    if (!outstandPlatforms.length) {
+    const outstandPlatforms = platforms.filter((p) => !DIRECT_PLATFORMS.includes(p));
+    const wantsFacebook = platforms.includes('FACEBOOK');
+    if (!outstandPlatforms.length && !wantsFacebook) {
       return { success: true, scheduled: [], failed: [] };
     }
+    if (wantsFacebook && !(await this.facebookService.hasPostablePage(userId))) {
+      throw new BadRequestException('Connect a Facebook Page before scheduling to Facebook.');
+    }
 
-    const verifiedAccounts = await this.prisma.socialAccount.findMany({
-      where: {
-        userId,
-        platform: { in: outstandPlatforms },
-      },
-    });
+    const verifiedAccounts = outstandPlatforms.length
+      ? await this.prisma.socialAccount.findMany({
+          where: {
+            userId,
+            platform: { in: outstandPlatforms },
+          },
+        })
+      : [];
 
-    if (!verifiedAccounts.length) {
+    if (outstandPlatforms.length && !verifiedAccounts.length) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
@@ -758,6 +802,21 @@ export class AutopostService {
           };
         }
 
+        // Facebook: scheduled on Facebook itself through the Graph API.
+        if (wantsFacebook) {
+          try {
+            await this.facebookService.publishForUser(userId, postItem.content, postItem.mediaUrls, {
+              scheduledAt: new Date(postItem.scheduledAt),
+            });
+          } catch (error) {
+            await this.prisma.post.update({ where: { id: postRecord.id }, data: { status: 'FAILED' } });
+            throw error;
+          }
+          if (!outstandAccountIds.length) {
+            return { success: true, postId: postRecord.id, scheduledAt: postItem.scheduledAt };
+          }
+        }
+
         // Fire to Outstand
         try {
           console.log('Outstand Scheduling Payload:', JSON.stringify(payload));
@@ -787,7 +846,7 @@ export class AutopostService {
           return { success: true, postId: postRecord.id, scheduledAt: postItem.scheduledAt };
 
         } catch (error) {
-          console.error('Outstand Scheduling Error:', error.response.data);
+          console.error('Outstand Scheduling Error:', error.response?.data ?? error.message);
           if (axios.isAxiosError(error)) {
             await this.prisma.post.update({
               where: { id: postRecord.id },
@@ -1394,6 +1453,10 @@ export class AutopostService {
     })
 
     if (!account) {
+      // Facebook Pages are listed by connection-status with their
+      // FacebookPage.id, so the same disconnect button works for them.
+      const removed = await this.facebookService.removePage(userId, socialAccountId)
+      if (removed) return removed
       throw new NotFoundException('Social account not found or not owned by this user.')
     }
 

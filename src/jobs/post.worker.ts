@@ -131,6 +131,7 @@ import { LinkedInService } from '../social-media/linkedin/linkedin.service'
 import { YoutubeService } from '../social-media/youtube/youtube.service'
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service'
 import { XService } from '../social-media/x/x.service'
+import { FacebookService } from '../social-media/facebook/facebook.service'
 import { BrevoService } from '../brevo/brevo.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import { captureError } from '../monitoring/sentry'
@@ -154,6 +155,7 @@ export class PostWorker implements OnModuleInit {
     private readonly youtubeService: YoutubeService,
     private readonly googleBusinessService: GoogleBusinessService,
     private readonly xService: XService,
+    private readonly facebookService: FacebookService,
     private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
@@ -240,6 +242,7 @@ export class PostWorker implements OnModuleInit {
             linkedAccounts: { where: { platform: 'LINKEDIN' } },
             youtubeAccount: true,
             xAccount: true,
+            facebookAccount: { include: { pages: { orderBy: { createdAt: 'asc' } } } },
             googleBusinessAccount: { include: { locations: { where: { selected: true, canPost: true } } } },
           },
         },
@@ -265,7 +268,8 @@ export class PostWorker implements OnModuleInit {
     const { user } = post
     const targetPlatforms = post.targetPlatforms ?? []
     const activeAccounts = user.socialAccounts.filter((acc) => {
-      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X') return false
+      // These platforms are published directly below, not through Outstand.
+      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X' || acc.platform === 'FACEBOOK') return false
       if (!targetPlatforms.length) return true
       return !!acc.platform && targetPlatforms.includes(acc.platform)
     })
@@ -275,12 +279,15 @@ export class PostWorker implements OnModuleInit {
     )
     const wantsGoogle = !targetPlatforms.length || targetPlatforms.includes('GOOGLE_BUSINESS')
     const wantsX = !targetPlatforms.length || targetPlatforms.includes('X')
+    const wantsFacebook = !targetPlatforms.length || targetPlatforms.includes('FACEBOOK')
     const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
     const youtubeAccount = wantsYoutube ? user.youtubeAccount : undefined
     const googleLocations = wantsGoogle ? user.googleBusinessAccount?.locations ?? [] : []
     const xAccount = wantsX ? user.xAccount : undefined
+    const facebookPages = wantsFacebook ? user.facebookAccount?.pages ?? [] : []
+    const facebookPage = facebookPages.find((p) => p.isDefault) || facebookPages[0]
 
-    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount) {
+    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !facebookPage) {
       throw new Error(`User ${user.id} has no connected channels for the selected platforms`)
     }
 
@@ -332,6 +339,12 @@ export class PostWorker implements OnModuleInit {
         await this.xService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined)
       }
 
+      if (facebookPage) {
+        await this.facebookService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined, {
+          isVideo: !!post.reel,
+        })
+      }
+
       let responseData: unknown = null
       if (outstandAccountIds.length) {
         const response = await axios.post(
@@ -379,6 +392,9 @@ export class PostWorker implements OnModuleInit {
         }
         if (xAccount) {
           publishedRows.push({ platform: 'X', accountName: xAccount.username ? `@${xAccount.username}` : 'X', postedAt })
+        }
+        if (facebookPage) {
+          publishedRows.push({ platform: 'FACEBOOK', accountName: facebookPage.pageName || 'Facebook Page', postedAt })
         }
         const platformRows = buildPlatformRowsHtml(publishedRows)
 

@@ -5,6 +5,7 @@ import { LinkedInModule } from '../social-media/linkedin/linkedin.module'
 import { YoutubeModule } from '../social-media/youtube/youtube.module'
 import { GoogleBusinessModule } from '../social-media/google-business/google-business.module'
 import { XModule } from '../social-media/x/x.module'
+import { FacebookModule } from '../social-media/facebook/facebook.module'
 import { JobsService } from './jobs.service'
 import { PostQueue } from './post.queue'
 import { PostWorker } from './post.worker'
@@ -18,6 +19,7 @@ import { BrevoModule } from '../brevo/brevo.module'
     YoutubeModule,
     GoogleBusinessModule,
     XModule,
+    FacebookModule,
     BrevoModule,
   ],
   providers: [JobsService, PostQueue, PostWorker, OnboardingDripService],

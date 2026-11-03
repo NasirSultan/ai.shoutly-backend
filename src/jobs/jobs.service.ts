@@ -32,7 +32,8 @@ export class JobsService {  // ← Add implements OnModuleInit
           status: 'SCHEDULED',
           user: {
             OR: [
-              { socialAccounts: { some: { status: 'active', platform: { notIn: ['YOUTUBE', 'GOOGLE_BUSINESS', 'X'] } } } },
+              { socialAccounts: { some: { status: 'active', platform: { notIn: ['YOUTUBE', 'GOOGLE_BUSINESS', 'X', 'FACEBOOK'] } } } },
+              { facebookAccount: { pages: { some: {} } } },
               { linkedAccounts: { some: { platform: 'LINKEDIN' } } },
               { youtubeAccount: { isNot: null } },
               { xAccount: { isNot: null } },
