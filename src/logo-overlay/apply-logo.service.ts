@@ -10,7 +10,14 @@ import { RedisService } from '../common/redis/redis.service';
 import { prisma } from '../lib/prisma';
 import { TEMPLATE_PRICE } from './template-pricing';
 
+// Layout size: every position/size below (margin, badge, fonts, bar) is
+// written for a 500×500 canvas.
 const CANVAS = 500;
+// Real output size in pixels. The SVG viewBox scales the 500-unit layout up
+// to this, so the post image is sharper but the design looks the same.
+const OUTPUT_SIZE = 1000;
+// Pixels per layout unit.
+const PX = OUTPUT_SIZE / CANVAS;
 const MARGIN = 16;
 const DOWNLOAD_TOKEN_TTL_SECONDS = 30 * 60;
 const DOWNLOAD_TOKEN_PURPOSE = 'render-download';
@@ -59,7 +66,7 @@ export class ApplyLogoService {
     let background: Buffer;
     try {
       background = await sharp(templateBuf)
-        .resize(CANVAS, CANVAS, { fit: 'cover', position: 'center' })
+        .resize(OUTPUT_SIZE, OUTPUT_SIZE, { fit: 'cover', position: 'center' })
         .toBuffer();
     } catch (error) {
       throw new InternalServerErrorException('Render failed');
@@ -71,18 +78,21 @@ export class ApplyLogoService {
       const badge = this.computeBadge(dto);
 
       if (dto.blur > 0 && badge && (dto.badgeStyle === 'glass' || dto.badgeStyle === 'outline')) {
+        // Badge box converted from layout units to real pixels.
+        const left = badge.x * PX;
+        const top = badge.y * PX;
         const backdropPatch = await sharp(background)
-          .extract({ left: badge.x, top: badge.y, width: badge.width, height: badge.height })
-          .blur(dto.blur)
+          .extract({ left, top, width: badge.width * PX, height: badge.height * PX })
+          .blur(dto.blur * PX)
           .toBuffer();
-        layers.push({ input: backdropPatch, left: badge.x, top: badge.y });
+        layers.push({ input: backdropPatch, left, top });
       }
 
       let logoDataUri: string | null = null;
       if (logoBuf && badge) {
         // badge.logoBoxSize (not dto.logoSize) — it's already cardScale-adjusted,
-        // so the raster is rendered crisp at its actual on-canvas display size.
-        const rounded = await this.roundedSquareLogo(logoBuf, Math.round(badge.logoBoxSize));
+        // Times PX so the raster is crisp at its real on-image pixel size.
+        const rounded = await this.roundedSquareLogo(logoBuf, Math.round(badge.logoBoxSize * PX));
         logoDataUri = `data:image/png;base64,${rounded.toString('base64')}`;
       }
 
@@ -110,8 +120,8 @@ export class ApplyLogoService {
         previewUrl: `/api/templates/render/${renderId}?token=${downloadToken}`,
         ...(entitled ? { downloadUrl: `/api/templates/render/${renderId}/download?token=${downloadToken}` } : {}),
         price: TEMPLATE_PRICE,
-        width: CANVAS,
-        height: CANVAS,
+        width: OUTPUT_SIZE,
+        height: OUTPUT_SIZE,
         createdAt: new Date().toISOString(),
       };
     } catch (error) {
@@ -228,7 +238,7 @@ export class ApplyLogoService {
   private async roundedSquareLogo(buf: Buffer, size: number): Promise<Buffer> {
     const resized = await sharp(buf).resize(size, size, { fit: 'cover' }).toBuffer();
     const mask = Buffer.from(
-      `<svg width="${size}" height="${size}"><rect width="${size}" height="${size}" rx="6" ry="6" fill="white"/></svg>`
+      `<svg width="${size}" height="${size}"><rect width="${size}" height="${size}" rx="${6 * PX}" ry="${6 * PX}" fill="white"/></svg>`
     );
     return sharp(resized).composite([{ input: mask, blend: 'dest-in' }]).png().toBuffer();
   }
@@ -314,7 +324,10 @@ export class ApplyLogoService {
     badge: ReturnType<ApplyLogoService['computeBadge']>,
     logoDataUri: string | null
   ): string {
-    const parts: string[] = [`<svg width="${CANVAS}" height="${CANVAS}" xmlns="http://www.w3.org/2000/svg">`];
+    // Real pixel size outside, 500-unit layout inside (viewBox scales it up).
+    const parts: string[] = [
+      `<svg width="${OUTPUT_SIZE}" height="${OUTPUT_SIZE}" viewBox="0 0 ${CANVAS} ${CANVAS}" xmlns="http://www.w3.org/2000/svg">`,
+    ];
 
     if (dto.showTextbar) {
       parts.push(this.buildBottomBar(dto));
