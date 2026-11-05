@@ -85,4 +85,11 @@ export class ApplyLogoDto {
 
   @IsBoolean()
   showTextbar: boolean;
+
+  // true = keep the template's own shape: output is 1000px wide with height
+  // in proportion (aspect ratio clamped to 2:1 wide … 1:2 tall, the rest is
+  // center-cropped). Omitted/false = today's 1000×1000 square crop.
+  @IsOptional()
+  @IsBoolean()
+  keepAspect?: boolean;
 }

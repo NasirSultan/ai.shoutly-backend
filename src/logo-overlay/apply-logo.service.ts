@@ -19,6 +19,14 @@ const OUTPUT_SIZE = 1000;
 // Pixels per layout unit.
 const PX = OUTPUT_SIZE / CANVAS;
 const MARGIN = 16;
+// keepAspect limits on height/width: 0.5 = 2:1 wide (1000×500),
+// 2 = 1:2 tall (1000×2000). Anything outside is center-cropped to the limit.
+const MIN_ASPECT = 0.5;
+const MAX_ASPECT = 2;
+
+// Image size in layout units. Width is always CANVAS (500); height is 500
+// for square renders, or in proportion when keepAspect is on.
+type Canvas = { w: number; h: number };
 const DOWNLOAD_TOKEN_TTL_SECONDS = 30 * 60;
 const DOWNLOAD_TOKEN_PURPOSE = 'render-download';
 // Rendered outputs are disposable — ImgBB deletes the file itself after this
@@ -63,19 +71,36 @@ export class ApplyLogoService {
     const wantsLogo = dto.showBadge && dto.showLogo && !!dto.logoUrl;
     const logoBuf = wantsLogo ? await this.fetchAsBuffer(dto.logoUrl as string) : null;
 
+    // Output is always OUTPUT_SIZE wide. Height is OUTPUT_SIZE (square) or,
+    // with keepAspect, in proportion to the template.
     let background: Buffer;
+    let outHeight = OUTPUT_SIZE;
     try {
+      if (dto.keepAspect) {
+        const meta = await sharp(templateBuf).metadata();
+        // EXIF orientation 5–8 means the photo is stored rotated 90°, so
+        // after rotate() its width and height are swapped.
+        const rotated = (meta.orientation ?? 1) >= 5;
+        const srcW = (rotated ? meta.height : meta.width) || OUTPUT_SIZE;
+        const srcH = (rotated ? meta.width : meta.height) || OUTPUT_SIZE;
+        const aspect = Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, srcH / srcW));
+        // Even number so the 500-unit layout height (outHeight / PX) stays whole-pixel aligned.
+        outHeight = Math.round((OUTPUT_SIZE * aspect) / PX) * PX;
+      }
       background = await sharp(templateBuf)
-        .resize(OUTPUT_SIZE, OUTPUT_SIZE, { fit: 'cover', position: 'center' })
+        .rotate()
+        .resize(OUTPUT_SIZE, outHeight, { fit: 'cover', position: 'center' })
         .toBuffer();
     } catch (error) {
       throw new InternalServerErrorException('Render failed');
     }
 
+    const canvas: Canvas = { w: CANVAS, h: outHeight / PX };
+
     try {
       const layers: sharp.OverlayOptions[] = [];
 
-      const badge = this.computeBadge(dto);
+      const badge = this.computeBadge(dto, canvas);
 
       if (dto.blur > 0 && badge && (dto.badgeStyle === 'glass' || dto.badgeStyle === 'outline')) {
         // Badge box converted from layout units to real pixels.
@@ -96,7 +121,7 @@ export class ApplyLogoService {
         logoDataUri = `data:image/png;base64,${rounded.toString('base64')}`;
       }
 
-      const svg = this.buildOverlaySvg(dto, badge, logoDataUri);
+      const svg = this.buildOverlaySvg(dto, badge, logoDataUri, canvas);
       layers.push({ input: Buffer.from(svg), left: 0, top: 0 });
 
       const outputBuffer = await sharp(background).composite(layers).png().toBuffer();
@@ -121,7 +146,7 @@ export class ApplyLogoService {
         ...(entitled ? { downloadUrl: `/api/templates/render/${renderId}/download?token=${downloadToken}` } : {}),
         price: TEMPLATE_PRICE,
         width: OUTPUT_SIZE,
-        height: OUTPUT_SIZE,
+        height: outHeight,
         createdAt: new Date().toISOString(),
       };
     } catch (error) {
@@ -243,7 +268,7 @@ export class ApplyLogoService {
     return sharp(resized).composite([{ input: mask, blend: 'dest-in' }]).png().toBuffer();
   }
 
-  private computeBadge(dto: ApplyLogoDto): { x: number; y: number; width: number; height: number; textStartX: number; textTopY: number; lines: { text: string; fontSize: number; fontWeight: number }[]; logoBoxSize: number; paddingX: number; lineHeight: number } | null {
+  private computeBadge(dto: ApplyLogoDto, canvas: Canvas): { x: number; y: number; width: number; height: number; textStartX: number; textTopY: number; lines: { text: string; fontSize: number; fontWeight: number }[]; logoBoxSize: number; paddingX: number; lineHeight: number } | null {
     const showLogoBox = dto.showLogo && !!dto.logoUrl;
 
     // Scales the whole card uniformly — padding, font sizes, logo, line
@@ -290,16 +315,16 @@ export class ApplyLogoService {
     let y: number;
     switch (dto.position as Position) {
       case 'tr':
-        x = CANVAS - MARGIN - width;
+        x = canvas.w - MARGIN - width;
         y = MARGIN;
         break;
       case 'bl':
         x = MARGIN;
-        y = CANVAS - MARGIN - height;
+        y = canvas.h - MARGIN - height;
         break;
       case 'br':
-        x = CANVAS - MARGIN - width;
-        y = CANVAS - MARGIN - height;
+        x = canvas.w - MARGIN - width;
+        y = canvas.h - MARGIN - height;
         break;
       case 'tl':
       default:
@@ -322,19 +347,20 @@ export class ApplyLogoService {
   private buildOverlaySvg(
     dto: ApplyLogoDto,
     badge: ReturnType<ApplyLogoService['computeBadge']>,
-    logoDataUri: string | null
+    logoDataUri: string | null,
+    canvas: Canvas
   ): string {
-    // Real pixel size outside, 500-unit layout inside (viewBox scales it up).
+    // Real pixel size outside, 500-unit-wide layout inside (viewBox scales it up).
     const parts: string[] = [
-      `<svg width="${OUTPUT_SIZE}" height="${OUTPUT_SIZE}" viewBox="0 0 ${CANVAS} ${CANVAS}" xmlns="http://www.w3.org/2000/svg">`,
+      `<svg width="${canvas.w * PX}" height="${canvas.h * PX}" viewBox="0 0 ${canvas.w} ${canvas.h}" xmlns="http://www.w3.org/2000/svg">`,
     ];
 
     if (dto.showTextbar) {
-      parts.push(this.buildBottomBar(dto));
+      parts.push(this.buildBottomBar(dto, canvas));
     }
 
     if (dto.showCorner) {
-      parts.push(this.buildCornerAccent(dto));
+      parts.push(this.buildCornerAccent(dto, canvas));
     }
 
     if (badge) {
@@ -345,12 +371,14 @@ export class ApplyLogoService {
     return parts.join('');
   }
 
-  private buildBottomBar(dto: ApplyLogoDto): string {
+  private buildBottomBar(dto: ApplyLogoDto, canvas: Canvas): string {
     // Black-to-primaryColor is a genuine opaque color blend (not an alpha
     // fade), so it stays visually smooth at any height — shrinking this is
     // safe now in a way the old opacity-based version wasn't.
-    const barHeight = Math.round(CANVAS * 0.18);
-    const barTop = CANVAS - barHeight;
+    // 18% of the shorter side: 90 units on square/tall images, less on wide
+    // ones so the bar doesn't cover too much of a short image.
+    const barHeight = Math.round(Math.min(canvas.w, canvas.h) * 0.18);
+    const barTop = canvas.h - barHeight;
     // showName/showContact/showOvtext control badge content only — the
     // frontend's own toggle labels say "on badge" ("Display name text on
     // badge", etc.). The bottom bar shows whatever text fields are
@@ -369,35 +397,37 @@ export class ApplyLogoService {
 
     if (!text) {
       return `${gradientDefs}
-        <rect x="0" y="${barTop}" width="${CANVAS}" height="${barHeight}" fill="url(#bottomBarGrad)"/>`;
+        <rect x="0" y="${barTop}" width="${canvas.w}" height="${barHeight}" fill="url(#bottomBarGrad)"/>`;
     }
 
     // Anchored near the bottom edge (not centered in the tall gradient band)
     // — that's where the fill is solid/opaque enough for text to read.
-    const textY = CANVAS - 18;
+    const textY = canvas.h - 18;
     const textColor = this.resolveTextColor(dto.textColor);
 
     return `${gradientDefs}
-      <rect x="0" y="${barTop}" width="${CANVAS}" height="${barHeight}" fill="url(#bottomBarGrad)"/>
-      <text x="${CANVAS / 2}" y="${textY}" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" fill="${textColor}" text-anchor="middle">${this.escapeXml(text)}</text>`;
+      <rect x="0" y="${barTop}" width="${canvas.w}" height="${barHeight}" fill="url(#bottomBarGrad)"/>
+      <text x="${canvas.w / 2}" y="${textY}" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="600" fill="${textColor}" text-anchor="middle">${this.escapeXml(text)}</text>`;
   }
 
-  private buildCornerAccent(dto: ApplyLogoDto): string {
+  private buildCornerAccent(dto: ApplyLogoDto, canvas: Canvas): string {
     // Scales with cardScale like every other badge measurement — a fixed
     // 44px bracket looked oversized next to a small (low-cardScale) badge.
     const scale = dto.cardScale ?? 1;
     const size = 44 * scale * 0.5;
     const strokeWidth = 4 * scale;
+    const right = canvas.w - MARGIN;
+    const bottom = canvas.h - MARGIN;
     let path: string;
     switch (dto.position as Position) {
       case 'tr':
-        path = `M ${CANVAS - MARGIN - size} ${MARGIN} L ${CANVAS - MARGIN} ${MARGIN} L ${CANVAS - MARGIN} ${MARGIN + size}`;
+        path = `M ${right - size} ${MARGIN} L ${right} ${MARGIN} L ${right} ${MARGIN + size}`;
         break;
       case 'bl':
-        path = `M ${MARGIN} ${CANVAS - MARGIN - size} L ${MARGIN} ${CANVAS - MARGIN} L ${MARGIN + size} ${CANVAS - MARGIN}`;
+        path = `M ${MARGIN} ${bottom - size} L ${MARGIN} ${bottom} L ${MARGIN + size} ${bottom}`;
         break;
       case 'br':
-        path = `M ${CANVAS - MARGIN - size} ${CANVAS - MARGIN} L ${CANVAS - MARGIN} ${CANVAS - MARGIN} L ${CANVAS - MARGIN} ${CANVAS - MARGIN - size}`;
+        path = `M ${right - size} ${bottom} L ${right} ${bottom} L ${right} ${bottom - size}`;
         break;
       case 'tl':
       default:
