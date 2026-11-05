@@ -4,6 +4,7 @@ import { PrismaService } from '../../lib/prisma.service'
 import { JwtService } from '@nestjs/jwt'
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { UserSignedUpEvent } from '../../events/user-signed-up.event'
+import { startTrialIfNew } from '../../subscription/trial'
 
 @Injectable()
 export class GoogleService {
@@ -52,6 +53,11 @@ export class GoogleService {
     if (!existing) {
       this.eventEmitter.emit('user.signed-up', new UserSignedUpEvent(user.name, user.email, 'Google', new Date()))
     }
+
+    // First login of a new user starts their 7-day free trial.
+    await startTrialIfNew(user.id, user.createdAt).catch((err) =>
+      console.error('Failed to start free trial:', err),
+    )
 
     const token = this.jwtService.sign({
       sub: user.id,

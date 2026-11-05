@@ -1,3 +1,4 @@
+import { assertPlatformAllowed } from '../subscription/trial'
 import { Injectable, BadRequestException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
 import { SocialPlatform, PostStatusBridge, DeliveryStatus } from '@prisma/client';
 import { ConnectAccountDto } from './dto/connect-account.dto';
@@ -187,6 +188,7 @@ export class AutopostService {
   }
 
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
+    await assertPlatformAllowed(userId, dto.platform)
     if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x' || dto.platform === 'facebook') {
       throw new BadRequestException('Connect Facebook, YouTube, Google Business, and X from their own buttons.');
     }
@@ -1323,6 +1325,7 @@ export class AutopostService {
   // submitted straight to Outstand in one call, which creates the AT
   // Protocol session immediately and hands back the account synchronously.
   async connectBlueskyDirect(userId: string, handle: string, appPassword: string) {
+    await assertPlatformAllowed(userId, 'bluesky')
     const cleanHandle = handle.trim().replace(/^@/, '')
     if (!cleanHandle || !appPassword?.trim()) {
       throw new BadRequestException('handle and appPassword are required')

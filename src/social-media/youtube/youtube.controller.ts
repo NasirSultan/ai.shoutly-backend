@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Response } from 'express';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { YoutubeService } from './youtube.service';
+import { assertPlatformAllowed } from '../../subscription/trial';
 
 @Controller('youtube')
 export class YoutubeController {
@@ -13,8 +14,9 @@ export class YoutubeController {
 
   @UseGuards(AuthGuard)
   @Get('auth')
-  getAuthUrl(@Req() req) {
+  async getAuthUrl(@Req() req) {
     const userId = req.user.id;
+    await assertPlatformAllowed(userId, 'youtube');
     const token = req.headers.authorization?.split(' ')[1];
     const state = Buffer.from(JSON.stringify({ userId, token })).toString('base64');
     return { url: this.youtubeService.authUrl(state) };

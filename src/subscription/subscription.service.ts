@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, NotFoundException } from "@nestjs/comm
 import { PlanPrices, Plan, Billing, Currency } from "./subscription.constants";
 import { prisma } from "../lib/prisma";
 import { CSV_EXPORT_ROW_LIMIT } from "../common/utils/csv.util";
+import { isOnTrial, TRIAL_ALLOWED_PLATFORMS } from "./trial";
 
 @Injectable()
 export class SubscriptionService {
@@ -10,11 +11,25 @@ export class SubscriptionService {
       where: { userId, isActive: true },
     });
 
+    const onTrial = await isOnTrial(userId);
+    const allowedPlatforms = onTrial ? TRIAL_ALLOWED_PLATFORMS : null; // null = no limit
+
     if (!subscription) {
-      return { hasActivePlan: false };
+      return { hasActivePlan: false, isTrial: false, trialExpired: false, allowedPlatforms };
     }
 
     const now = Date.now();
+    const expired = !!subscription.expiresAt && subscription.expiresAt.getTime() <= now;
+    if (expired) {
+      return {
+        hasActivePlan: false,
+        isTrial: subscription.isTrial,
+        trialExpired: subscription.isTrial,
+        expiresAt: subscription.expiresAt,
+        allowedPlatforms,
+      };
+    }
+
     const daysRemaining = subscription.expiresAt
       ? Math.max(0, Math.ceil((subscription.expiresAt.getTime() - now) / (1000 * 60 * 60 * 24)))
       : null;
@@ -23,6 +38,8 @@ export class SubscriptionService {
       hasActivePlan: true,
       plan: subscription.plan,
       isTrial: subscription.isTrial,
+      trialExpired: false,
+      allowedPlatforms,
       billing: subscription.billing,
       currency: subscription.currency,
       amount: subscription.amount,
