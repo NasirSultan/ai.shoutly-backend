@@ -5,6 +5,7 @@
 export const CRON_HEARTBEATS = {
   checkDuePosts: { label: 'Scheduled posts (every minute)', staleAfterMs: 5 * 60 * 1000 },
   sendDueDripEmails: { label: 'Onboarding emails (every minute)', staleAfterMs: 10 * 60 * 1000 },
+  sendDailyPostSummaries: { label: 'Daily post summary emails (every 10 minutes)', staleAfterMs: 35 * 60 * 1000 },
   cleanupOldBookings: { label: 'Demo booking cleanup (daily)', staleAfterMs: 26 * 60 * 60 * 1000 },
 } as const
 export type CronName = keyof typeof CRON_HEARTBEATS

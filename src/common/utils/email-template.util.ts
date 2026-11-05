@@ -28,7 +28,7 @@ export function buildPlatformRowsHtml(rows: PlatformRowInput[]): string {
         <span class="${badgeClass}">${statusText}</span>
         <span class="platform-account">${escapeHtml(accountName)}</span>
         <span class="platform-network">${escapeHtml(platform.toUpperCase())}</span>
-        <div class="platform-time">Posted on ${escapeHtml(postedAt)}</div>
+        <div class="platform-time">${status === 'failed' ? 'Tried on' : 'Posted on'} ${escapeHtml(postedAt)}</div>
       </div>`
     })
     .join('\n')
