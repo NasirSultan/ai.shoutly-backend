@@ -7,6 +7,7 @@ import { PostQueue } from '../jobs/post.queue'
 import { normalizeTimezone } from '../common/utils/timezone.util'
 import { AutopostService } from '../outstand/autopost.service'
 import { SocialPlatform } from '@prisma/client'
+import { TRIAL_DAYS } from '../subscription/trial'
 
 @Injectable()
 export class CalendarService {
@@ -240,8 +241,15 @@ export class CalendarService {
       }
     }
 
-    const planType = 'PAID'
-    const totalDays = 31
+    // Paid plans get a month of posts. A free trial only gets posts for the
+    // days left in the trial (7 at most), so nothing is scheduled after it ends.
+    const planType = subscription.isTrial ? 'TRIAL' : 'PAID'
+    const trialDaysLeft = subscription.expiresAt
+      ? Math.ceil((subscription.expiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+      : TRIAL_DAYS
+    const totalDays = subscription.isTrial
+      ? Math.min(TRIAL_DAYS, Math.max(1, trialDaysLeft))
+      : 31
 
     const userTz = normalizeTimezone(user.timezone)
     const [hours, minutes] = postTimeInput.split(':').map(Number)
