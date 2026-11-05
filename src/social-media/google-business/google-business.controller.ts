@@ -4,6 +4,7 @@ import { IsArray, IsString } from 'class-validator';
 import { Response } from 'express';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { GoogleBusinessService } from './google-business.service';
+import { assertPlatformAllowed } from '../../subscription/trial';
 
 class SelectLocationsDto {
   @IsArray()
@@ -20,8 +21,9 @@ export class GoogleBusinessController {
 
   @UseGuards(AuthGuard)
   @Get('auth')
-  getAuthUrl(@Req() req) {
+  async getAuthUrl(@Req() req) {
     const userId = req.user.id;
+    await assertPlatformAllowed(userId, 'google_business');
     const token = req.headers.authorization?.split(' ')[1];
     const state = Buffer.from(JSON.stringify({ userId, token })).toString('base64');
     return { url: this.googleBusinessService.authUrl(state) };

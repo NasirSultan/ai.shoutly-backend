@@ -11,6 +11,7 @@ import { TwoFactorService } from './two-factor/two-factor.service'
 import { AuditLogService } from '../audit-log/audit-log.service'
 import { EventEmitter2 } from '@nestjs/event-emitter'
 import { UserSignedUpEvent } from '../events/user-signed-up.event'
+import { startTrialIfNew } from '../subscription/trial'
 
 @Injectable()
 export class AuthService {
@@ -224,7 +225,13 @@ async login(email: string, password: string) {
   return this.issueTokens(user)
 }
 
-private async issueTokens(user: { id: string; email: string; role: string }) {
+private async issueTokens(user: { id: string; email: string; role: string; createdAt: Date }) {
+  // First login of a new user starts their 7-day free trial. A failure here
+  // must not block the login itself.
+  await startTrialIfNew(user.id, user.createdAt).catch((err) =>
+    console.error('Failed to start free trial:', err),
+  )
+
   const payload = { sub: user.id, email: user.email, role: user.role }
   const accessToken = this.jwtService.sign(payload, { expiresIn: 7 * 24 * 60 * 60 })
   const refreshToken = this.jwtService.sign(payload, { expiresIn: 30 * 24 * 60 * 60 })

@@ -3,6 +3,7 @@ import { Response } from 'express';
 import { JwtService } from '@nestjs/jwt';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { FacebookService } from './facebook.service';
+import { assertPlatformAllowed } from '../../subscription/trial';
 
 @Controller('facebook')
 export class FacebookController {
@@ -14,6 +15,7 @@ export class FacebookController {
   @UseGuards(AuthGuard)
   @Get('auth')
   async getAuthUrl(@Req() req) {
+    await assertPlatformAllowed(req.user.id, 'facebook');
     const token = req.headers.authorization?.split(' ')[1] || '';
     const url = await this.facebookService.authUrl(req.user.id, token);
     return { url };
