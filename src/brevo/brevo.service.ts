@@ -118,7 +118,7 @@ export class BrevoService {
       name: senderName,
     },
     to: [{ email: toEmail, name: userName }],
-    subject: 'Your ShoutlyAI post is now live!',
+    subject: 'Your ShoutlyAI post update',
     params: {
       userName,
       platformRows: platformRowsHtml,

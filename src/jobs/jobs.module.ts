@@ -10,6 +10,7 @@ import { JobsService } from './jobs.service'
 import { PostQueue } from './post.queue'
 import { PostWorker } from './post.worker'
 import { OnboardingDripService } from './onboarding-drip.service'
+import { DailyPostSummaryService } from './daily-post-summary.service'
 import { BrevoModule } from '../brevo/brevo.module'
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { BrevoModule } from '../brevo/brevo.module'
     FacebookModule,
     BrevoModule,
   ],
-  providers: [JobsService, PostQueue, PostWorker, OnboardingDripService],
+  providers: [JobsService, PostQueue, PostWorker, OnboardingDripService, DailyPostSummaryService],
   exports: [PostQueue],
 })
 

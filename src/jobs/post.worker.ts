@@ -121,23 +121,27 @@
 
 import { Injectable, OnModuleInit } from '@nestjs/common'
 import { Worker, Job } from 'bullmq'
-import { DateTime } from 'luxon'
 import { RedisService } from '../common/redis/redis.service'
 import axios from 'axios'
 import { prisma } from '../lib/prisma'
-import { normalizeTimezone } from '../common/utils/timezone.util'
-import { buildPlatformRowsHtml } from '../common/utils/email-template.util'
+import { PUBLISH_RESULTS_TTL_SECONDS, SavedPlatformResult, publishResultsKey } from './publish-results'
 import { LinkedInService } from '../social-media/linkedin/linkedin.service'
 import { YoutubeService } from '../social-media/youtube/youtube.service'
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service'
 import { XService } from '../social-media/x/x.service'
 import { FacebookService } from '../social-media/facebook/facebook.service'
-import { BrevoService } from '../brevo/brevo.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import { captureError } from '../monitoring/sentry'
 
 interface PublishJobData {
   calendarPostId: string
+}
+
+interface PlatformResult {
+  platform: string
+  accountName: string
+  ok: boolean
+  reason?: string
 }
 
 @Injectable()
@@ -150,7 +154,6 @@ export class PostWorker implements OnModuleInit {
 
   constructor(
     private readonly redisService: RedisService,
-    private readonly brevoService: BrevoService,
     private readonly linkedInService: LinkedInService,
     private readonly youtubeService: YoutubeService,
     private readonly googleBusinessService: GoogleBusinessService,
@@ -309,116 +312,147 @@ export class PostWorker implements OnModuleInit {
       }]
     }
 
-    try {
-      if (linkedInAccount) {
-        await this.linkedInService.publish({
+    // Each platform is published on its own: one failing must not stop the
+    // others, and must not mark a post FAILED when it is already live
+    // somewhere (a retry would then post it there a second time).
+    const results: PlatformResult[] = []
+    const attempt = async (targets: { platform: string; accountName: string }[], run: () => Promise<unknown>) => {
+      try {
+        await run()
+        results.push(...targets.map((t) => ({ ...t, ok: true })))
+      } catch (error) {
+        const reason = this.errorReason(error)
+        console.error(`[Outstand Worker] Post ${calendarPostId} failed on ${targets.map((t) => t.platform).join(', ')}: ${reason}`)
+        results.push(...targets.map((t) => ({ ...t, ok: false, reason })))
+      }
+    }
+
+    if (linkedInAccount) {
+      await attempt([{ platform: 'LINKEDIN', accountName: 'LinkedIn' }], () =>
+        this.linkedInService.publish({
           accessToken: linkedInAccount.accessToken,
           personId: linkedInAccount.platformUserId,
           commentary: container.content,
           mediaUrl,
           video: !!mediaUrl && (mediaUrl.split('?')[0].toLowerCase().endsWith('.mp4') || !!post.reel),
-        })
-      }
+        }),
+      )
+    }
 
-      if (youtubeAccount) {
-        const videoUrl = post.youtubeVideoUrl || (post.reel?.file ? mediaUrl : undefined)
-        await this.youtubeService.publishForUser(user.id, container.content, videoUrl, {
+    if (youtubeAccount) {
+      const videoUrl = post.youtubeVideoUrl || (post.reel?.file ? mediaUrl : undefined)
+      await attempt([{ platform: 'YOUTUBE', accountName: youtubeAccount.channelTitle || 'YouTube' }], () =>
+        this.youtubeService.publishForUser(user.id, container.content, videoUrl, {
           title: post.youtubeTitle || undefined,
           privacyStatus: (post.youtubePrivacy as 'public' | 'private' | 'unlisted' | null) || undefined,
           tags: post.youtubeTags ? post.youtubeTags.split(',').map((tag) => tag.trim()).filter(Boolean) : undefined,
           madeForKids: post.youtubeMadeForKids,
           isShort: post.youtubeIsShort,
-        })
-      }
+        }),
+      )
+    }
 
-      if (googleLocations.length) {
-        await this.googleBusinessService.publishForUser(user.id, container.content, post.reel ? undefined : mediaUrl)
-      }
+    if (googleLocations.length) {
+      await attempt(
+        [{ platform: 'GOOGLE_BUSINESS', accountName: googleLocations.map((location) => location.title).join(', ') }],
+        () => this.googleBusinessService.publishForUser(user.id, container.content, post.reel ? undefined : mediaUrl),
+      )
+    }
 
-      if (xAccount) {
-        await this.xService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined)
-      }
+    if (xAccount) {
+      await attempt([{ platform: 'X', accountName: xAccount.username ? `@${xAccount.username}` : 'X' }], () =>
+        this.xService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined),
+      )
+    }
 
-      if (facebookPage) {
-        await this.facebookService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined, {
+    if (facebookPage) {
+      await attempt([{ platform: 'FACEBOOK', accountName: facebookPage.pageName || 'Facebook Page' }], () =>
+        this.facebookService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined, {
           isVideo: !!post.reel,
-        })
-      }
+        }),
+      )
+    }
 
-      let responseData: unknown = null
-      if (outstandAccountIds.length) {
-        const response = await axios.post(
-          `${this.outstandBaseUrl}/posts/`,
-          {
-            accounts: outstandAccountIds,
-            containers: [container],
-          },
-          {
-            headers: {
-              'Authorization': `Bearer ${this.outstandApiKey}`,
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
+    // One Outstand request covers all its accounts, so they succeed or fail together.
+    let responseData: unknown = null
+    if (outstandAccountIds.length) {
+      const targets = activeAccounts.map((acc) => ({
+        platform: acc.platform || 'Unknown',
+        accountName: acc.username || acc.platform || 'Connected account',
+      }))
+      await attempt(targets, async () => {
+        try {
+          const response = await axios.post(
+            `${this.outstandBaseUrl}/posts/`,
+            { accounts: outstandAccountIds, containers: [container] },
+            {
+              headers: {
+                'Authorization': `Bearer ${this.outstandApiKey}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+              },
             },
-          }
-        )
-        responseData = response.data
-      }
+          )
+          responseData = response.data
+        } catch (error) {
+          // Counts toward the "outstand errors" alert.
+          if (axios.isAxiosError(error)) void this.monitoring.recordServiceError('outstand')
+          throw error
+        }
+      })
+    }
 
-      // 5. Explicitly flip state tracking status flags to POSTED upon remote delivery completion
-      await prisma.calendarPost.update({
-        where: { id: calendarPostId },
+    const published = results.filter((r) => r.ok)
+    const failed = results.filter((r) => !r.ok)
+
+    // Live on at least one platform → POSTED. Only POSTING is updated so a
+    // post reset or changed meanwhile is left alone.
+    if (published.length) {
+      await prisma.calendarPost.updateMany({
+        where: { id: calendarPostId, status: 'POSTING' },
         data: { status: 'POSTED' },
       })
-
-      // 6. Announce the publish — decoupled from sending the notification
-      // email itself. Fire-and-forget: publishing succeeded regardless of
-      // whether the email later succeeds, so this doesn't await anything.
-      if (user.email) {
-        const tz = normalizeTimezone(user.timezone, 'Asia/Karachi')
-        const postedAt = DateTime.now().setZone(tz).toFormat("MMM dd, yyyy 'at' hh:mm a")
-        const publishedRows = activeAccounts.map((acc) => ({
-          platform: acc.platform || 'Unknown',
-          accountName: acc.username || acc.platform || 'Connected account',
-          postedAt,
-        }))
-        if (linkedInAccount) {
-          publishedRows.push({ platform: 'LINKEDIN', accountName: 'LinkedIn', postedAt })
-        }
-        if (youtubeAccount) {
-          publishedRows.push({ platform: 'YOUTUBE', accountName: youtubeAccount.channelTitle || 'YouTube', postedAt })
-        }
-        if (googleLocations.length) {
-          publishedRows.push({ platform: 'GOOGLE_BUSINESS', accountName: googleLocations.map((location) => location.title).join(', '), postedAt })
-        }
-        if (xAccount) {
-          publishedRows.push({ platform: 'X', accountName: xAccount.username ? `@${xAccount.username}` : 'X', postedAt })
-        }
-        if (facebookPage) {
-          publishedRows.push({ platform: 'FACEBOOK', accountName: facebookPage.pageName || 'Facebook Page', postedAt })
-        }
-        const platformRows = buildPlatformRowsHtml(publishedRows)
-
-        await this.brevoService.sendPostPublishedEmail(
-          user.email,
-          user.name || 'Creator',
-          platformRows,
-        ).catch((err) => {
-          console.error('[Brevo Alert Failed]:', err?.message || err?.response?.data || JSON.stringify(err))
-        })
-      }
-
-      return responseData
-
-    } catch (error) {
-      // Any failed request to Outstand (rejected or unreachable) counts toward
-      // the "outstand errors" alert.
-      if (axios.isAxiosError(error)) void this.monitoring.recordServiceError('outstand')
-      if (axios.isAxiosError(error) && error.response) {
-        console.error('--- OUTSTAND CRITICAL REMOTE EXCEPTION ---')
-        console.error(JSON.stringify(error.response.data, null, 2))
-        throw new Error(`Outstand Rejected Data: ${error.response.data?.message || error.message}`)
-      }
-      throw error
     }
+
+    // No email here: the user gets one email per day (DailyPostSummaryService)
+    // listing every platform as posted or failed. Save this post's results
+    // for it, without reasons (those stay in logs, Sentry and the failed job).
+    // A save error must not change the post's status.
+    const saved: SavedPlatformResult[] = results.map(({ platform, accountName, ok }) => ({ platform, accountName, ok }))
+    await this.redisService
+      .getClient()
+      .set(publishResultsKey(calendarPostId), JSON.stringify(saved), { EX: PUBLISH_RESULTS_TTL_SECONDS })
+      .catch((err) => console.error(`[Outstand Worker] Could not save results for post ${calendarPostId}:`, err?.message || err))
+
+    const failureSummary = failed.map((r) => `${r.platform}: ${r.reason}`).join(' | ')
+
+    // Nothing went live: throw so the job fails, the post becomes FAILED and
+    // the watchdog alerts. The message (shown on the admin monitoring page)
+    // names each platform and why it failed.
+    if (!published.length) {
+      throw new Error(`Failed on every platform — ${failureSummary}`)
+    }
+
+    // Live somewhere but not everywhere: the post stays POSTED, so report the
+    // failed platforms to Sentry for the admin.
+    if (failed.length) {
+      captureError(new Error(`Post partly published — ${failureSummary}`), 'publish-worker', {
+        postId: calendarPostId,
+        published: published.map((r) => r.platform),
+        failed: failed.map((r) => ({ platform: r.platform, reason: r.reason })),
+      })
+    }
+
+    return { results: results.map(({ platform, ok, reason }) => ({ platform, ok, reason })), outstand: responseData }
+  }
+
+  // A short, readable reason for logs and admin views (never sent to the user).
+  private errorReason(error: unknown): string {
+    if (axios.isAxiosError(error)) {
+      const data = error.response?.data as { message?: string; error?: { message?: string } } | undefined
+      return data?.message || data?.error?.message || error.message
+    }
+    if (error instanceof Error) return error.message
+    return String(error)
   }
 }
