@@ -27,6 +27,8 @@ type PlatformConnection = {
 const POSTING_FREQUENCY_TARGET_PER_WEEK = 5
 const PROFILE_CHECKLIST_SIZE = 8
 const DAY_MS = 24 * 3600 * 1000
+// The posting streak looks back at most this many days.
+const STREAK_MAX_DAYS = 60
 
 export type StatsPeriod = 'week' | 'month'
 
@@ -69,6 +71,7 @@ export class DashboardService {
     const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS)
     const fourteenDaysAgo = new Date(now.getTime() - 14 * DAY_MS)
     const thirtyDaysAgo = new Date(now.getTime() - 30 * DAY_MS)
+    const streakWindowStart = new Date(today.getTime() - (STREAK_MAX_DAYS - 1) * DAY_MS)
 
     const [{ data }] = await prisma.$queryRaw<Array<{ data: any }>>`
       SELECT json_build_object(
@@ -103,7 +106,6 @@ export class DashboardService {
           ORDER BY "createdAt" DESC
           LIMIT 1
         ),
-        'connections', ${this.connectionsSql(userId)},
         'nextPost', (
           SELECT json_build_object('time', ${iso('cp."postTime"')}, 'title', c.text)
           FROM "CalendarPost" cp
@@ -116,14 +118,41 @@ export class DashboardService {
           SELECT json_build_object(
             'posted7', count(*) FILTER (WHERE status = 'POSTED' AND "updatedAt" >= ${ts(sevenDaysAgo)}),
             'postedPrev7', count(*) FILTER (WHERE status = 'POSTED' AND "updatedAt" >= ${ts(fourteenDaysAgo)} AND "updatedAt" < ${ts(sevenDaysAgo)}),
-            'posted30', count(*) FILTER (WHERE status = 'POSTED'),
-            'failed30', count(*) FILTER (WHERE status = 'FAILED'),
             'postedDays30', count(DISTINCT date("updatedAt")) FILTER (WHERE status = 'POSTED')
           )
           FROM "CalendarPost"
           WHERE "userId" = ${userId} AND "updatedAt" >= ${ts(thirtyDaysAgo)}
         ),
-        'manualQueued', (SELECT count(*) FROM "Post" WHERE "userId" = ${userId} AND status = 'SCHEDULED'),
+        'analytics', json_build_object(
+          -- Published vs failed in the last 30 days, for the success rate.
+          'outcomes', (
+            SELECT json_build_object(
+              'published', count(*) FILTER (WHERE status = 'POSTED'),
+              'failed', count(*) FILTER (WHERE status = 'FAILED')
+            )
+            FROM "CalendarPost"
+            WHERE "userId" = ${userId} AND "postTime" >= ${ts(thirtyDaysAgo)} AND "postTime" < ${ts(now)}
+          ),
+          -- Days (newest first) with a published post, for the streak.
+          'postedDays', (
+            SELECT coalesce(json_agg(d ORDER BY d DESC), '[]'::json) FROM (
+              SELECT DISTINCT date("postTime")::text AS d
+              FROM "CalendarPost"
+              WHERE "userId" = ${userId} AND status = 'POSTED'
+                AND "postTime" >= ${ts(streakWindowStart)} AND "postTime" < ${ts(now)}
+            ) x
+          ),
+          -- Published posts in the last 30 days, by type.
+          'contentMix', (
+            SELECT json_build_object(
+              'image', count(*) FILTER (WHERE type = 'IMAGE'),
+              'reel', count(*) FILTER (WHERE type = 'REEL'),
+              'festival', count(*) FILTER (WHERE type = 'FESTIVAL')
+            )
+            FROM "CalendarPost"
+            WHERE "userId" = ${userId} AND status = 'POSTED' AND "postTime" >= ${ts(thirtyDaysAgo)}
+          )
+        ),
         'festival', (
           SELECT json_build_object(
             'name', f.event,
@@ -183,8 +212,6 @@ export class DashboardService {
     const user = data.user
     const sub = data.subscription
     const counts = data.counts
-    // Not returned; only used for analytics.totalFollowers.
-    const connectedPlatforms = this.buildConnections(data.connections, now)
 
     return {
       greeting: {
@@ -210,7 +237,7 @@ export class DashboardService {
       upcomingFestival: data.festival || null,
       quickNotes: { text: data.note?.text || '', updatedAt: data.note?.updatedAt || null },
       recentActivity: this.buildRecentActivity(data.activity, dayKey(today)),
-      analytics: this.buildAnalytics(connectedPlatforms, counts.posted30, counts.failed30, counts.posted7, Number(data.manualQueued)),
+      analytics: this.buildAnalytics(data.analytics, today),
       // Count distinct days with at least one post, not the number of posts.
       brandHealth: this.buildBrandHealth(user, counts.postedDays30, counts.posted7)
     }
@@ -230,10 +257,9 @@ export class DashboardService {
         'connections', ${this.connectionsSql(userId)},
         'totals', (
           SELECT json_build_object(
-            'generated', count(*),
+            'scheduled', count(*) FILTER (WHERE status = 'SCHEDULED'),
             'published', count(*) FILTER (WHERE status = 'POSTED'),
-            'failed', count(*) FILTER (WHERE status = 'FAILED'),
-            'scheduled', count(*) FILTER (WHERE status = 'SCHEDULED')
+            'failed', count(*) FILTER (WHERE status = 'FAILED')
           )
           FROM "CalendarPost" WHERE "userId" = ${userId}
         ),
@@ -280,24 +306,17 @@ export class DashboardService {
     return this.buildPeriod(period, n, start, end, data)
   }
 
-  // Generated = by created date. Published / failed = by post time.
+  // All three by post time: scheduled (waiting), published (POSTED), failed.
   private dailySeriesSql(userId: string, start: Date, end: Date) {
     return Prisma.sql`
-      'generatedByDay', (
-        SELECT coalesce(json_agg(g), '[]'::json) FROM (
-          SELECT date("createdAt")::text AS day, count(*) AS n
-          FROM "CalendarPost"
-          WHERE "userId" = ${userId} AND "createdAt" >= ${ts(start)} AND "createdAt" < ${ts(end)}
-          GROUP BY 1
-        ) g
-      ),
-      'outcomesByDay', (
+      'byDay', (
         SELECT coalesce(json_agg(o), '[]'::json) FROM (
           SELECT date("postTime")::text AS day,
+                 count(*) FILTER (WHERE status = 'SCHEDULED') AS scheduled,
                  count(*) FILTER (WHERE status = 'POSTED') AS published,
                  count(*) FILTER (WHERE status = 'FAILED') AS failed
           FROM "CalendarPost"
-          WHERE "userId" = ${userId} AND status IN ('POSTED', 'FAILED')
+          WHERE "userId" = ${userId} AND status IN ('SCHEDULED', 'POSTED', 'FAILED')
             AND "postTime" >= ${ts(start)} AND "postTime" < ${ts(end)}
           GROUP BY 1
         ) o
@@ -307,30 +326,27 @@ export class DashboardService {
 
   // Every day in the range is returned, with zeros where nothing happened.
   private buildPeriod(period: StatsPeriod, offset: number, start: Date, end: Date, data: any) {
-    const days = new Map<string, { date: string; generated: number; published: number; failed: number }>()
+    const days = new Map<string, { date: string; scheduled: number; published: number; failed: number }>()
     for (let t = start.getTime(); t < end.getTime(); t += DAY_MS) {
       const key = dayKey(new Date(t))
-      days.set(key, { date: key, generated: 0, published: 0, failed: 0 })
+      days.set(key, { date: key, scheduled: 0, published: 0, failed: 0 })
     }
-    for (const row of data.generatedByDay) {
-      const day = days.get(row.day)
-      if (day) day.generated = Number(row.n)
-    }
-    for (const row of data.outcomesByDay) {
+    for (const row of data.byDay) {
       const day = days.get(row.day)
       if (!day) continue
+      day.scheduled = Number(row.scheduled)
       day.published = Number(row.published)
       day.failed = Number(row.failed)
     }
 
     const list = [...days.values()]
-    const sum = (k: 'generated' | 'published' | 'failed') => list.reduce((s, d) => s + d[k], 0)
+    const sum = (k: 'scheduled' | 'published' | 'failed') => list.reduce((s, d) => s + d[k], 0)
     return {
       period,
       offset,
       start: dayKey(start),
       end: dayKey(new Date(end.getTime() - DAY_MS)),
-      generated: sum('generated'),
+      scheduled: sum('scheduled'),
       published: sum('published'),
       failed: sum('failed'),
       days: list
@@ -599,25 +615,39 @@ export class DashboardService {
     })
   }
 
-  // All from our own DB — no Outstand calls.
+  // Points not shown anywhere else on the dashboard. All from our own DB.
   private buildAnalytics(
-    connectedPlatforms: PlatformConnection[],
-    publishedLast30Days: number,
-    failedLast30Days: number,
-    publishedLast7Days: number,
-    postsQueued: number
+    a: {
+      outcomes: { published: number; failed: number }
+      postedDays: string[]
+      contentMix: { image: number; reel: number; festival: number }
+    },
+    today: Date
   ) {
-    const attempted = publishedLast30Days + failedLast30Days
+    // Days in a row with a published post. It ends today, or yesterday if
+    // nothing went out yet today, so the streak does not reset in the morning.
+    const posted = new Set(a.postedDays)
+    let day = today.getTime()
+    if (!posted.has(dayKey(new Date(day)))) day -= DAY_MS
+    let postingStreakDays = 0
+    while (posted.has(dayKey(new Date(day)))) {
+      postingStreakDays++
+      day -= DAY_MS
+    }
+
+    // Percent of posts that went out, of those due in the last 30 days.
+    // null when nothing was due, so the page can show "—" instead of 0%.
+    const published = Number(a.outcomes.published)
+    const attempted = published + Number(a.outcomes.failed)
+
     return {
-      // X followers + YouTube subscribers, as saved by their own services.
-      totalFollowers: connectedPlatforms
-        .filter(p => p.connected)
-        .reduce((sum, p) => sum + (p.followers || 0), 0),
-      postsQueued,
-      publishedLast7Days,
-      publishedLast30Days,
-      failedLast30Days,
-      successRate: attempted > 0 ? Math.round((publishedLast30Days / attempted) * 100) : null
+      successRate: attempted > 0 ? Math.round((published / attempted) * 100) : null,
+      postingStreakDays,
+      contentMix: {
+        image: Number(a.contentMix.image),
+        reel: Number(a.contentMix.reel),
+        festival: Number(a.contentMix.festival)
+      }
     }
   }
 
