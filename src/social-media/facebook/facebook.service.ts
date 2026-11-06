@@ -67,6 +67,10 @@ export class FacebookService {
       scope: SCOPES.join(','),
       state,
       response_type: 'code',
+      // Always show the permission screen again. Without this, Facebook
+      // reuses the user's earlier answers and can skip asking for a
+      // permission the user turned off before.
+      auth_type: 'rerequest',
     });
     return `https://www.facebook.com/${this.version}/dialog/oauth?${params.toString()}`;
   }
@@ -103,6 +107,12 @@ export class FacebookService {
         },
       }),
     );
+
+    // Facebook can finish the login without giving every permission (the
+    // user turned one off, or the app is not allowed to ask for it). Without
+    // pages_manage_posts every post fails later, so stop here with a clear
+    // message instead of showing "connected".
+    await this.assertPostingAllowed(long.access_token);
 
     const pages = await this.fetchPages(long.access_token);
     if (!pages.length) {
@@ -142,6 +152,24 @@ export class FacebookService {
 
     await this.markConnected(userId);
     return { pages: pages.length, defaultPageId };
+  }
+
+  private async assertPostingAllowed(userToken: string) {
+    const { data } = await this.call(() =>
+      axios.get(`${this.graph}/me/permissions`, { params: { access_token: userToken } }),
+    );
+    const granted = new Set(
+      ((data?.data ?? []) as { permission: string; status: string }[])
+        .filter((p) => p.status === 'granted')
+        .map((p) => p.permission),
+    );
+    const missing = ['pages_manage_posts', 'pages_read_engagement'].filter((p) => !granted.has(p));
+    if (missing.length) {
+      console.error('[Facebook connect] missing permissions:', missing.join(', '));
+      throw new BadRequestException(
+        'Facebook did not allow Shoutly to post to your Page. Please connect again and allow every permission.',
+      );
+    }
   }
 
   private async fetchPages(userToken: string) {
