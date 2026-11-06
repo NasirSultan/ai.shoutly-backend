@@ -14,10 +14,12 @@ import { YoutubeService } from '../social-media/youtube/youtube.service';
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service';
 import { XService } from '../social-media/x/x.service';
 import { FacebookService } from '../social-media/facebook/facebook.service';
+import { TiktokService } from '../social-media/tiktok/tiktok.service';
+import { BlueskyService } from '../social-media/bluesky/bluesky.service';
 
 // Platforms we publish to with our own API integrations. Everything else
 // still goes through Outstand.
-const DIRECT_PLATFORMS: SocialPlatform[] = ['LINKEDIN', 'YOUTUBE', 'GOOGLE_BUSINESS', 'X', 'FACEBOOK'];
+const DIRECT_PLATFORMS: SocialPlatform[] = ['LINKEDIN', 'YOUTUBE', 'GOOGLE_BUSINESS', 'X', 'FACEBOOK', 'TIKTOK', 'BLUESKY'];
 
 // Generic, publicly-documented social-media-marketing benchmark posting
 // windows per platform — NOT computed from any individual user's own data.
@@ -75,6 +77,8 @@ export class AutopostService {
     private readonly googleBusinessService: GoogleBusinessService,
     private readonly xService: XService,
     private readonly facebookService: FacebookService,
+    private readonly tiktokService: TiktokService,
+    private readonly blueskyService: BlueskyService,
   ) {
     if (!this.outstandApiKey) {
       console.warn('Warning: OUTSTAND_API_KEY is not defined in your environment variables.');
@@ -189,8 +193,11 @@ export class AutopostService {
 
   async getConnectUrl(userId: string, dto: ConnectAccountDto) {
     await assertPlatformAllowed(userId, dto.platform)
-    if (dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x' || dto.platform === 'facebook') {
-      throw new BadRequestException('Connect Facebook, YouTube, Google Business, and X from their own buttons.');
+    if (
+      dto.platform === 'youtube' || dto.platform === 'google_business' || dto.platform === 'x' ||
+      dto.platform === 'facebook' || dto.platform === 'tiktok' || dto.platform === 'bluesky'
+    ) {
+      throw new BadRequestException('Connect Facebook, YouTube, Google Business, X, TikTok, and Bluesky from their own buttons.');
     }
     try {
       console.log('Outstand Config:', { url: this.outstandBaseUrl, hasKey: !!this.outstandApiKey, platform: dto.platform });
@@ -493,7 +500,7 @@ export class AutopostService {
     }
   }
 
-  async publishImmediately(userId: string, dto: PublishPostDto) {
+  async publishImmediately(userId: string, dto: PublishPostDto, calendarPostId?: string) {
     const fingerprint = JSON.stringify({ content: dto.content, platforms: dto.platforms, mediaUrls: dto.mediaUrls })
     if (!(await this.acquirePublishLock(userId, fingerprint))) {
       throw new BadRequestException('This exact post was just submitted — please wait a few seconds before retrying.')
@@ -516,6 +523,8 @@ export class AutopostService {
     const wantsGoogle = platforms.includes('GOOGLE_BUSINESS');
     const wantsX = platforms.includes('X');
     const wantsFacebook = platforms.includes('FACEBOOK');
+    const wantsTiktok = platforms.includes('TIKTOK');
+    const wantsBluesky = platforms.includes('BLUESKY');
     const outstandPlatforms = platforms.filter((p) => !DIRECT_PLATFORMS.includes(p));
 
     const verifiedAccounts = outstandPlatforms.length
@@ -547,6 +556,12 @@ export class AutopostService {
       ? await this.prisma.xAccount.findUnique({ where: { userId } })
       : null;
     const hasFacebook = wantsFacebook ? await this.facebookService.hasPostablePage(userId) : false;
+    const tiktokAccount = wantsTiktok
+      ? await this.prisma.tiktokAccount.findUnique({ where: { userId } })
+      : null;
+    const blueskyAccount = wantsBluesky
+      ? await this.prisma.blueskyAccount.findUnique({ where: { userId } })
+      : null;
 
     if (wantsFacebook && !hasFacebook) {
       throw new BadRequestException('Connect a Facebook Page before posting to Facebook.');
@@ -563,8 +578,17 @@ export class AutopostService {
     if (wantsX && !xAccount) {
       throw new BadRequestException('Connect X before posting to X.');
     }
+    if (wantsTiktok && !tiktokAccount) {
+      throw new BadRequestException('Connect TikTok before posting to TikTok.');
+    }
+    if (wantsBluesky && !blueskyAccount) {
+      throw new BadRequestException('Connect Bluesky before posting to Bluesky.');
+    }
 
-    if (!linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !hasFacebook && !verifiedAccounts.length) {
+    if (
+      !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount &&
+      !hasFacebook && !tiktokAccount && !blueskyAccount && !verifiedAccounts.length
+    ) {
       throw new BadRequestException('No matching social accounts found for the given platforms');
     }
 
@@ -606,65 +630,100 @@ export class AutopostService {
       }));
     }
 
-    // 4. LinkedIn goes to the member API. Outstand still receives every other account.
+    // 4. Each platform is attempted on its own. A calendar post remembers which
+    // ones already succeeded, so a retry does not post them again.
+    const savedPlatforms = calendarPostId
+      ? (await this.prisma.calendarPost.findUnique({ where: { id: calendarPostId }, select: { publishedPlatforms: true } }))?.publishedPlatforms ?? []
+      : []
+    const done = new Set(savedPlatforms)
+    const failures: string[] = []
+    const step = async (platform: string, run: () => Promise<unknown>) => {
+      if (done.has(platform)) return
+      try {
+        await run()
+        done.add(platform)
+        if (calendarPostId) {
+          await this.prisma.calendarPost.update({
+            where: { id: calendarPostId },
+            data: { publishedPlatforms: [...done] },
+          })
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Publish failed'
+        failures.push(`${platform}: ${message}`)
+      }
+    }
+
     try {
       if (linkedInAccount) {
-        const mediaUrl = dto.mediaUrls?.[0];
-        await this.linkedInService.publish({
+        await step('LINKEDIN', () => this.linkedInService.publish({
           accessToken: linkedInAccount.accessToken,
           personId: linkedInAccount.platformUserId,
           commentary: dto.content,
-          mediaUrl,
-          video: !!mediaUrl && mediaUrl.split('?')[0].toLowerCase().endsWith('.mp4'),
-        });
+          mediaUrl: dto.mediaUrls?.[0],
+          video: !!dto.mediaUrls?.[0] && dto.mediaUrls[0].split('?')[0].toLowerCase().endsWith('.mp4'),
+        }))
       }
 
       if (youtubeAccount) {
-        await this.youtubeService.publishForUser(userId, dto.content, dto.youtube?.videoUrl || dto.mediaUrls?.[0], dto.youtube);
+        await step('YOUTUBE', () => this.youtubeService.publishForUser(userId, dto.content, dto.youtube?.videoUrl || dto.mediaUrls?.[0], dto.youtube))
       }
 
       if (googleLocations.length) {
-        await this.googleBusinessService.publishForUser(userId, dto.content, dto.mediaUrls?.[0]);
+        await step('GOOGLE_BUSINESS', () => this.googleBusinessService.publishForUser(userId, dto.content, dto.mediaUrls?.[0]))
       }
 
       if (xAccount) {
-        await this.xService.publishForUser(userId, dto.content, dto.mediaUrls);
+        await step('X', () => this.xService.publishForUser(userId, dto.content, dto.mediaUrls))
+      }
+
+      if (tiktokAccount) {
+        await step('TIKTOK', () => this.tiktokService.publishForUser(userId, dto.content, dto.mediaUrls?.[0], dto.tiktok))
+      }
+
+      if (blueskyAccount) {
+        await step('BLUESKY', () => this.blueskyService.publishForUser(userId, dto.content, dto.mediaUrls))
       }
 
       if (hasFacebook) {
-        await this.facebookService.publishForUser(userId, dto.content, dto.mediaUrls);
+        await step('FACEBOOK', () => this.facebookService.publishForUser(userId, dto.content, dto.mediaUrls))
       }
 
       let outstandPostId: string | null = null;
-      if (outstandAccountIds.length) {
-        const response = await axios.post(
-          `${this.outstandBaseUrl.trim()}/posts/`,
-          {
-            accounts: outstandAccountIds,
-            containers: [container],
-            ...(effectivePinterest
-              ? {
-                  pinterest: {
-                    board_id: effectivePinterest.boardId,
-                    ...(effectivePinterest.link ? { link: effectivePinterest.link } : {}),
-                    ...(effectivePinterest.title ? { title: effectivePinterest.title } : {}),
-                    ...(effectivePinterest.altText ? { alt_text: effectivePinterest.altText } : {}),
-                  },
-                }
-              : {}),
-          },
-          {
-            headers: {
-              'Authorization': `Bearer ${this.outstandApiKey.trim()}`,
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      if (outstandAccountIds.length && !done.has('OUTSTAND')) {
+        await step('OUTSTAND', async () => {
+          const response = await axios.post(
+            `${this.outstandBaseUrl.trim()}/posts/`,
+            {
+              accounts: outstandAccountIds,
+              containers: [container],
+              ...(effectivePinterest
+                ? {
+                    pinterest: {
+                      board_id: effectivePinterest.boardId,
+                      ...(effectivePinterest.link ? { link: effectivePinterest.link } : {}),
+                      ...(effectivePinterest.title ? { title: effectivePinterest.title } : {}),
+                      ...(effectivePinterest.altText ? { alt_text: effectivePinterest.altText } : {}),
+                    },
+                  }
+                : {}),
             },
-          }
-        );
+            {
+              headers: {
+                'Authorization': `Bearer ${this.outstandApiKey.trim()}`,
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              },
+            }
+          );
+          const outstandResult = response.data;
+          outstandPostId = outstandResult.data?.id ?? outstandResult.post?.id ?? outstandResult.id;
+        })
+      }
 
-        const outstandResult = response.data;
-        outstandPostId = outstandResult.data?.id ?? outstandResult.post?.id ?? outstandResult.id;
+      if (failures.length) {
+        throw new BadRequestException(failures.join(' '))
       }
 
       await this.prisma.post.update({
@@ -1320,48 +1379,10 @@ export class AutopostService {
     }
   }
 
-  // ── Bluesky has no OAuth step — unlike every other platform here, there's
-  // no /connect redirect or callback. The handle + app password are
-  // submitted straight to Outstand in one call, which creates the AT
-  // Protocol session immediately and hands back the account synchronously.
+  // Handle and app password open a Bluesky session. The password is not stored.
   async connectBlueskyDirect(userId: string, handle: string, appPassword: string) {
     await assertPlatformAllowed(userId, 'bluesky')
-    const cleanHandle = handle.trim().replace(/^@/, '')
-    if (!cleanHandle || !appPassword?.trim()) {
-      throw new BadRequestException('handle and appPassword are required')
-    }
-
-    let accountData: any
-    try {
-      const response = await axios.post(
-        `${this.outstandBaseUrl}/social-accounts/bluesky`,
-        { handle: cleanHandle, appPassword: appPassword.trim() },
-        { headers: { Authorization: `Bearer ${this.outstandApiKey}`, 'Content-Type': 'application/json' } },
-      )
-      accountData = response.data?.data || response.data
-    } catch (error) {
-      if (axios.isAxiosError(error) && error.response) {
-        console.error('[connectBlueskyDirect] Outstand rejected the connection:', error.response.data)
-        throw new BadRequestException(
-          error.response.data?.message || 'Outstand rejected the Bluesky handle/app password.'
-        )
-      }
-      throw new InternalServerErrorException('Failed to reach Outstand for Bluesky connection.')
-    }
-
-    if (!accountData?.id) {
-      throw new InternalServerErrorException('Outstand did not return an account id for the Bluesky connection.')
-    }
-
-    // Reuses the same save path as every other direct connection —
-    // verifyOutstandNetwork() will independently confirm this account is
-    // really "bluesky" against Outstand's own records before saving.
-    return this.saveDirectConnection(userId, {
-      outstandAccountId: accountData.id,
-      networkUniqueId: accountData.network_unique_id || accountData.did || '',
-      username: accountData.username || accountData.nickname || cleanHandle,
-      platform: 'bluesky',
-    })
+    return this.blueskyService.connect(userId, handle, appPassword)
   }
 
   // ── Pinterest boards — every Pin needs a board_id (see publishImmediately

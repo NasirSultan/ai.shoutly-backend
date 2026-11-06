@@ -11,7 +11,7 @@ const SUPPORTED_PLATFORMS = [
 // These connect directly and live in their own tables. Old Outstand
 // SocialAccount rows for them stay behind after a disconnect, so they are
 // never used to decide if these platforms are connected.
-const DIRECT_PLATFORMS = ['FACEBOOK', 'LINKEDIN', 'X', 'YOUTUBE', 'GOOGLE_BUSINESS']
+const DIRECT_PLATFORMS = ['FACEBOOK', 'LINKEDIN', 'X', 'YOUTUBE', 'GOOGLE_BUSINESS', 'TIKTOK', 'BLUESKY']
 
 type PlatformConnection = {
   platform: string
@@ -183,10 +183,8 @@ export class DashboardService {
     const user = data.user
     const sub = data.subscription
     const counts = data.counts
+    // Not returned; only used for analytics.totalFollowers.
     const connectedPlatforms = this.buildConnections(data.connections, now)
-    const needsAttention = connectedPlatforms
-      .filter(p => p.needsAction)
-      .map(p => ({ platform: p.platform, action: p.needsAction }))
 
     return {
       greeting: {
@@ -212,8 +210,6 @@ export class DashboardService {
       upcomingFestival: data.festival || null,
       quickNotes: { text: data.note?.text || '', updatedAt: data.note?.updatedAt || null },
       recentActivity: this.buildRecentActivity(data.activity, dayKey(today)),
-      connectedPlatforms,
-      needsAttention,
       analytics: this.buildAnalytics(connectedPlatforms, counts.posted30, counts.failed30, counts.posted7, Number(data.manualQueued)),
       // Count distinct days with at least one post, not the number of posts.
       brandHealth: this.buildBrandHealth(user, counts.postedDays30, counts.posted7)
@@ -409,6 +405,26 @@ export class DashboardService {
         )
         FROM "YoutubeAccount" WHERE "userId" = ${userId}
       ),
+      'tiktok', (
+        SELECT json_build_object(
+          'id', id,
+          'tokenExpiry', ${iso('"tokenExpiry"')},
+          'refreshExpiry', ${iso('"refreshExpiry"')},
+          'hasRefreshToken', coalesce("refreshToken", '') <> '',
+          'username', username, 'name', "displayName",
+          'avatarUrl', "avatarUrl", 'followers', "followerCount",
+          'lastSync', ${iso('"updatedAt"')}
+        )
+        FROM "TiktokAccount" WHERE "userId" = ${userId}
+      ),
+      'bluesky', (
+        SELECT json_build_object(
+          'id', id, 'handle', handle, 'name', "displayName", 'status', status,
+          'avatarUrl', "avatarUrl", 'followers', "followersCount",
+          'lastSync', ${iso('"updatedAt"')}
+        )
+        FROM "BlueskyAccount" WHERE "userId" = ${userId}
+      ),
       'google', (
         SELECT json_build_object(
           'tokenExpiry', ${iso('ga."tokenExpiry"')},
@@ -502,6 +518,46 @@ export class DashboardService {
       }
     }
 
+    if (c.tiktok) {
+      // Usable while the refresh token is still valid (or the access token, if none).
+      const expired = c.tiktok.hasRefreshToken
+        ? isExpired(c.tiktok.refreshExpiry)
+        : isExpired(c.tiktok.tokenExpiry)
+      direct.TIKTOK = {
+        ...empty('TIKTOK'),
+        connected: true,
+        expired,
+        needsAction: expired ? 'RECONNECT' : null,
+        accountCount: 1,
+        username: c.tiktok.username || c.tiktok.name || null,
+        avatarUrl: c.tiktok.avatarUrl || null,
+        followers: toNumber(c.tiktok.followers),
+        ...accounts([{
+          id: c.tiktok.id, username: c.tiktok.username, name: c.tiktok.name, avatarUrl: c.tiktok.avatarUrl,
+          followers: toNumber(c.tiktok.followers), lastSync: c.tiktok.lastSync
+        }])
+      }
+    }
+
+    if (c.bluesky) {
+      // BlueskyService marks the row "expired" when the user must reconnect.
+      const expired = c.bluesky.status === 'expired'
+      direct.BLUESKY = {
+        ...empty('BLUESKY'),
+        connected: true,
+        expired,
+        needsAction: expired ? 'RECONNECT' : null,
+        accountCount: 1,
+        username: c.bluesky.handle || null,
+        avatarUrl: c.bluesky.avatarUrl || null,
+        followers: toNumber(c.bluesky.followers),
+        ...accounts([{
+          id: c.bluesky.id, handle: c.bluesky.handle, name: c.bluesky.name, avatarUrl: c.bluesky.avatarUrl,
+          followers: toNumber(c.bluesky.followers), lastSync: c.bluesky.lastSync
+        }])
+      }
+    }
+
     if (c.google) {
       // Same rule as GoogleBusinessService.status(): only a chosen,
       // postable location counts as connected.
@@ -578,7 +634,7 @@ export class DashboardService {
   }
 
   // Activity is grouped per day in SQL for the last 7 days. Show only today's
-  // entries when there are any, otherwise the whole 7 days. Newest first, max 15.
+  // entries when there are any, otherwise the whole 7 days. Newest first, max 3.
   private buildRecentActivity(rows: Array<{ type: string; platform: string | null; day: string; count: number; latest: string }>, today: string) {
     const todays = rows.filter(r => r.day === today)
     const chosen = todays.length ? todays : rows
@@ -598,7 +654,7 @@ export class DashboardService {
     return chosen
       .map(r => ({ type: r.type, message: message(r), time: r.latest }))
       .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-      .slice(0, 15)
+      .slice(0, 3)
   }
 
   private buildBrandHealth(user: any, postedDaysCount: number, postedLast7Days: number) {
