@@ -26,13 +26,16 @@ export class FacebookController {
     @Query('code') code: string,
     @Query('state') state: string,
     @Query('error') oauthError: string,
+    @Query('error_description') oauthErrorDescription: string,
+    @Query('error_reason') oauthErrorReason: string,
     @Res() res: Response,
   ) {
     const front = (process.env.FRONTEND_URL || 'https://shoutlyai.com').replace(/\/$/, '');
     const done = `${front}/dashboards/settings/accounts`;
 
     if (oauthError || !code || !state) {
-      return res.redirect(`${done}?facebook=error`);
+      const reason = oauthErrorDescription || oauthErrorReason || oauthError || 'Facebook did not return a login code.';
+      return res.redirect(`${done}?facebook=error&reason=${encodeURIComponent(reason.slice(0, 400))}`);
     }
 
     try {
@@ -44,7 +47,7 @@ export class FacebookController {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Facebook connection did not finish.';
       console.error('[Facebook callback]', message);
-      return res.redirect(`${done}?facebook=error&reason=${encodeURIComponent(message.slice(0, 180))}`);
+      return res.redirect(`${done}?facebook=error&reason=${encodeURIComponent(message.slice(0, 400))}`);
     }
   }
 
