@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../lib/prisma'
-import { NotesService } from '../notes/notes.service'
 
 // Every platform the app supports, in display order.
 const SUPPORTED_PLATFORMS = [
@@ -26,28 +26,25 @@ type PlatformConnection = {
 
 const POSTING_FREQUENCY_TARGET_PER_WEEK = 5
 const PROFILE_CHECKLIST_SIZE = 8
+const DAY_MS = 24 * 3600 * 1000
 
-function startOfDay(d: Date) {
-  const copy = new Date(d)
-  copy.setHours(0, 0, 0, 0)
-  return copy
-}
+export type StatsPeriod = 'week' | 'month'
 
 function dayKey(d: Date) {
   return d.toISOString().split('T')[0]
 }
 
-const DAY_MS = 24 * 3600 * 1000
-
-export type StatsPeriod = 'week' | 'month'
+function utcMidnight(d: Date) {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()))
+}
 
 // UTC range for a week (Monday–Sunday) or a calendar month. offset 0 is the
 // current one, 1 the one before, and so on. `end` is exclusive.
 function periodRange(period: StatsPeriod, offset: number, now = new Date()) {
-  const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const today = utcMidnight(now).getTime()
   if (period === 'week') {
-    const daysSinceMonday = (new Date(todayUtc).getUTCDay() + 6) % 7
-    const start = new Date(todayUtc - (daysSinceMonday + offset * 7) * DAY_MS)
+    const daysSinceMonday = (new Date(today).getUTCDay() + 6) % 7
+    const start = new Date(today - (daysSinceMonday + offset * 7) * DAY_MS)
     return { start, end: new Date(start.getTime() + 7 * DAY_MS) }
   }
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1))
@@ -55,78 +52,138 @@ function periodRange(period: StatsPeriod, offset: number, now = new Date()) {
   return { start, end }
 }
 
+// Timestamp columns are stored in UTC without a zone. Turn them into ISO
+// strings ending in Z so JSON output matches what Prisma Date objects gave.
+const iso = (column: string) => Prisma.raw(`to_char(${column}, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`)
+// A JS Date as a UTC timestamp parameter.
+const ts = (d: Date) => Prisma.sql`${d.toISOString()}::timestamp`
+
+// Each dashboard API runs ONE SQL query. Every query to the database costs a
+// full network round trip (≈1s from far away) and the pool only allows a few
+// at once, so ~25 small queries made the dashboard take 15–25 seconds.
 @Injectable()
 export class DashboardService {
-  constructor(private readonly notesService: NotesService) {}
-
   async getOverview(userId: string) {
     const now = new Date()
-    const today = startOfDay(now)
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000)
-    const fourteenDaysAgo = new Date(now.getTime() - 14 * 24 * 3600 * 1000)
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 3600 * 1000)
+    const today = utcMidnight(now)
+    const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS)
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * DAY_MS)
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * DAY_MS)
 
-    const [
-      user,
-      activeSubscription,
-      connectedPlatforms,
-      nextScheduledPost,
-      postedLast30Days,
-      postedLast7Days,
-      postedPrevious7Days,
-      failedLast30Days,
-      manualPostsQueued,
-      upcomingFestival,
-      quickNotes
-    ] = await Promise.all([
-      prisma.user.findUnique({
-        where: { id: userId },
-        select: {
-          name: true,
-          brandName: true,
-          brandLogo: true,
-          website: true,
-          jobTitle: true,
-          phone: true,
-          industryId: true,
-          subIndustryId: true,
-          logo: { select: { id: true } },
-          industry: { select: { id: true, name: true } },
-          subIndustry: { select: { id: true, name: true } }
-        }
-      }),
-      prisma.subscription.findFirst({
-        where: { userId, isActive: true, expiresAt: { gt: now } },
-        orderBy: { createdAt: 'desc' }
-      }),
-      this.getPlatformConnections(userId),
-      prisma.calendarPost.findFirst({
-        where: { userId, status: 'SCHEDULED', postTime: { gte: now } },
-        orderBy: { postTime: 'asc' },
-        include: { content: true }
-      }),
-      prisma.calendarPost.findMany({
-        where: { userId, status: 'POSTED', updatedAt: { gte: thirtyDaysAgo } },
-        select: { updatedAt: true }
-      }),
-      prisma.calendarPost.count({
-        where: { userId, status: 'POSTED', updatedAt: { gte: sevenDaysAgo } }
-      }),
-      prisma.calendarPost.count({
-        where: { userId, status: 'POSTED', updatedAt: { gte: fourteenDaysAgo, lt: sevenDaysAgo } }
-      }),
-      prisma.calendarPost.count({
-        where: { userId, status: 'FAILED', updatedAt: { gte: thirtyDaysAgo } }
-      }),
-      prisma.post.count({ where: { userId, status: 'SCHEDULED' } }),
-      prisma.festival.findFirst({
-        where: { date: { gte: today }, images: { some: { deletedAt: null } } },
-        orderBy: { date: 'asc' },
-        include: { images: { where: { deletedAt: null }, take: 1 } }
-      }),
-      this.notesService.get(userId)
-    ])
+    const [{ data }] = await prisma.$queryRaw<Array<{ data: any }>>`
+      SELECT json_build_object(
+        'user', (
+          SELECT json_build_object(
+            'name', u.name,
+            'brandName', u."brandName",
+            'brandLogo', u."brandLogo",
+            'website', u.website,
+            'jobTitle', u."jobTitle",
+            'phone', u.phone,
+            'industryId', u."industryId",
+            'subIndustryId', u."subIndustryId",
+            'hasLogo', EXISTS (SELECT 1 FROM "Logo" l WHERE l."userId" = u.id),
+            'industryName', i.name,
+            'subIndustryName', s.name
+          )
+          FROM "User" u
+          LEFT JOIN "Industry" i ON i.id = u."industryId"
+          LEFT JOIN "SubIndustry" s ON s.id = u."subIndustryId"
+          WHERE u.id = ${userId}
+        ),
+        'subscription', (
+          SELECT json_build_object(
+            'plan', plan::text,
+            'billing', billing::text,
+            'isTrial', "isTrial",
+            'expiresAt', ${iso('"expiresAt"')}
+          )
+          FROM "Subscription"
+          WHERE "userId" = ${userId} AND "isActive" AND "expiresAt" > ${ts(now)}
+          ORDER BY "createdAt" DESC
+          LIMIT 1
+        ),
+        'connections', ${this.connectionsSql(userId)},
+        'nextPost', (
+          SELECT json_build_object('time', ${iso('cp."postTime"')}, 'title', c.text)
+          FROM "CalendarPost" cp
+          LEFT JOIN "Content" c ON c.id = cp."contentId"
+          WHERE cp."userId" = ${userId} AND cp.status = 'SCHEDULED' AND cp."postTime" >= ${ts(now)}
+          ORDER BY cp."postTime" ASC
+          LIMIT 1
+        ),
+        'counts', (
+          SELECT json_build_object(
+            'posted7', count(*) FILTER (WHERE status = 'POSTED' AND "updatedAt" >= ${ts(sevenDaysAgo)}),
+            'postedPrev7', count(*) FILTER (WHERE status = 'POSTED' AND "updatedAt" >= ${ts(fourteenDaysAgo)} AND "updatedAt" < ${ts(sevenDaysAgo)}),
+            'posted30', count(*) FILTER (WHERE status = 'POSTED'),
+            'failed30', count(*) FILTER (WHERE status = 'FAILED'),
+            'postedDays30', count(DISTINCT date("updatedAt")) FILTER (WHERE status = 'POSTED')
+          )
+          FROM "CalendarPost"
+          WHERE "userId" = ${userId} AND "updatedAt" >= ${ts(thirtyDaysAgo)}
+        ),
+        'manualQueued', (SELECT count(*) FROM "Post" WHERE "userId" = ${userId} AND status = 'SCHEDULED'),
+        'festival', (
+          SELECT json_build_object(
+            'name', f.event,
+            'date', ${iso('f.date')},
+            'imageUrl', (
+              SELECT fi.file FROM "FestivalImage" fi
+              WHERE fi."festivalId" = f.id AND fi."deletedAt" IS NULL
+              LIMIT 1
+            )
+          )
+          FROM "Festival" f
+          WHERE f.date >= ${ts(today)}
+            AND EXISTS (SELECT 1 FROM "FestivalImage" fi WHERE fi."festivalId" = f.id AND fi."deletedAt" IS NULL)
+          ORDER BY f.date ASC
+          LIMIT 1
+        ),
+        'note', (
+          SELECT json_build_object('text', text, 'updatedAt', ${iso('"updatedAt"')})
+          FROM "Note" WHERE "userId" = ${userId}
+        ),
+        'activity', (
+          SELECT coalesce(json_agg(a), '[]'::json) FROM (
+            SELECT 'posts_generated' AS type, NULL AS platform, date("createdAt")::text AS day,
+                   count(*) AS count, ${iso('max("createdAt")')} AS latest
+            FROM "CalendarPost"
+            WHERE "userId" = ${userId} AND "createdAt" >= ${ts(sevenDaysAgo)}
+            GROUP BY date("createdAt")
+            UNION ALL
+            SELECT 'posts_scheduled', NULL, date("updatedAt")::text, count(*), ${iso('max("updatedAt")')}
+            FROM "CalendarPost"
+            WHERE "userId" = ${userId} AND status = 'SCHEDULED' AND "updatedAt" >= ${ts(sevenDaysAgo)}
+            GROUP BY date("updatedAt")
+            UNION ALL
+            SELECT 'post_failed', NULL, date("updatedAt")::text, count(*), ${iso('max("updatedAt")')}
+            FROM "CalendarPost"
+            WHERE "userId" = ${userId} AND status = 'FAILED' AND "updatedAt" >= ${ts(sevenDaysAgo)}
+            GROUP BY date("updatedAt")
+            UNION ALL
+            SELECT 'reel_queued', NULL, date("createdAt")::text, count(*), ${iso('max("createdAt")')}
+            FROM "CalendarPost"
+            WHERE "userId" = ${userId} AND type = 'REEL' AND status IN ('SCHEDULED', 'POSTING')
+              AND "createdAt" >= ${ts(sevenDaysAgo)}
+            GROUP BY date("createdAt")
+            UNION ALL
+            SELECT 'post_published', coalesce(sa.platform::text, 'UNKNOWN'), date(pd."updatedAt")::text,
+                   count(*), ${iso('max(pd."updatedAt")')}
+            FROM "PostDelivery" pd
+            JOIN "Post" p ON p.id = pd."postId"
+            LEFT JOIN "SocialAccount" sa ON sa.id = pd."socialAccountId"
+            WHERE p."userId" = ${userId} AND pd."deliveryStatus" = 'PUBLISHED' AND pd."updatedAt" >= ${ts(sevenDaysAgo)}
+            GROUP BY coalesce(sa.platform::text, 'UNKNOWN'), date(pd."updatedAt")
+          ) a
+        )
+      ) AS data
+    `
 
+    const user = data.user
+    const sub = data.subscription
+    const counts = data.counts
+    const connectedPlatforms = this.buildConnections(data.connections, now)
     const needsAttention = connectedPlatforms
       .filter(p => p.needsAction)
       .map(p => ({ platform: p.platform, action: p.needsAction }))
@@ -135,79 +192,79 @@ export class DashboardService {
       greeting: {
         name: user?.name || null,
         date: now.toISOString(),
-        nextPostAt: nextScheduledPost?.postTime || null
+        nextPostAt: data.nextPost?.time || null
       },
       subIndustrySelected: {
         selected: !!user?.subIndustryId,
         id: user?.subIndustryId || null,
-        name: user?.subIndustry?.name || null,
-        industry: user?.industry ? { id: user.industry.id, name: user.industry.name } : null
+        name: user?.subIndustryName || null,
+        industry: user?.industryId ? { id: user.industryId, name: user.industryName } : null
       },
       subscription: {
         // STARTER | BUSINESS | AUTOPILOT | GROWTH (legacy) | FREE (no active plan)
-        plan: activeSubscription?.plan || 'FREE',
-        billing: activeSubscription?.billing || null,
-        isTrial: !!activeSubscription?.isTrial,
-        isPurchased: !!activeSubscription && !activeSubscription.isTrial,
-        expiresAt: activeSubscription?.expiresAt || null
+        plan: sub?.plan || 'FREE',
+        billing: sub?.billing || null,
+        isTrial: !!sub?.isTrial,
+        isPurchased: !!sub && !sub.isTrial,
+        expiresAt: sub?.expiresAt || null
       },
-      insight: this.buildInsight(postedLast7Days, postedPrevious7Days),
-      upcomingFestival: upcomingFestival
-        ? {
-            name: upcomingFestival.event,
-            date: upcomingFestival.date,
-            imageUrl: upcomingFestival.images[0]?.file || null
-          }
-        : null,
-      quickNotes,
-      recentActivity: await this.getRecentActivity(userId, today, sevenDaysAgo),
+      insight: this.buildInsight(counts.posted7, counts.postedPrev7),
+      upcomingFestival: data.festival || null,
+      quickNotes: { text: data.note?.text || '', updatedAt: data.note?.updatedAt || null },
+      recentActivity: this.buildRecentActivity(data.activity, dayKey(today)),
       connectedPlatforms,
       needsAttention,
-      analytics: this.buildAnalytics(connectedPlatforms, postedLast30Days.length, failedLast30Days, postedLast7Days, manualPostsQueued),
+      analytics: this.buildAnalytics(connectedPlatforms, counts.posted30, counts.failed30, counts.posted7, Number(data.manualQueued)),
       // Count distinct days with at least one post, not the number of posts.
-      brandHealth: this.buildBrandHealth(
-        user,
-        new Set(postedLast30Days.map(p => dayKey(p.updatedAt))).size,
-        postedLast7Days
-      )
+      brandHealth: this.buildBrandHealth(user, counts.postedDays30, counts.posted7)
     }
   }
 
   // GET /dashboard/autopilot — summary plus the current week and month.
   async getAutopilot(userId: string) {
     const now = new Date()
-    const [connectedPlatforms, statusCounts, generatedTotal, nextScheduledPost, thisWeek, thisMonth] = await Promise.all([
-      this.getPlatformConnections(userId),
-      prisma.calendarPost.groupBy({ by: ['status'], where: { userId }, _count: { _all: true } }),
-      prisma.calendarPost.count({ where: { userId } }),
-      prisma.calendarPost.findFirst({
-        where: { userId, status: 'SCHEDULED', postTime: { gte: now } },
-        orderBy: { postTime: 'asc' },
-        include: { content: true }
-      }),
-      this.getPeriodStats(userId, 'week', 0),
-      this.getPeriodStats(userId, 'month', 0)
-    ])
+    const week = periodRange('week', 0, now)
+    const month = periodRange('month', 0, now)
+    // One date range that covers both, sliced per period afterwards.
+    const start = new Date(Math.min(week.start.getTime(), month.start.getTime()))
+    const end = new Date(Math.max(week.end.getTime(), month.end.getTime()))
 
-    const byStatus = (status: string) => statusCounts.find(s => s.status === status)?._count._all || 0
+    const [{ data }] = await prisma.$queryRaw<Array<{ data: any }>>`
+      SELECT json_build_object(
+        'connections', ${this.connectionsSql(userId)},
+        'totals', (
+          SELECT json_build_object(
+            'generated', count(*),
+            'published', count(*) FILTER (WHERE status = 'POSTED'),
+            'failed', count(*) FILTER (WHERE status = 'FAILED'),
+            'scheduled', count(*) FILTER (WHERE status = 'SCHEDULED')
+          )
+          FROM "CalendarPost" WHERE "userId" = ${userId}
+        ),
+        'nextPost', (
+          SELECT json_build_object('time', ${iso('cp."postTime"')}, 'title', c.text)
+          FROM "CalendarPost" cp
+          LEFT JOIN "Content" c ON c.id = cp."contentId"
+          WHERE cp."userId" = ${userId} AND cp.status = 'SCHEDULED' AND cp."postTime" >= ${ts(now)}
+          ORDER BY cp."postTime" ASC
+          LIMIT 1
+        ),
+        ${this.dailySeriesSql(userId, start, end)}
+      ) AS data
+    `
+
+    const connectedPlatforms = this.buildConnections(data.connections, now)
     const connected = connectedPlatforms.filter(p => p.connected).length
     const working = connectedPlatforms.filter(p => p.connected && !p.expired).length
     const needsAttention = connectedPlatforms.filter(p => p.needsAction).length
 
     return {
       active: working > 0,
-      totals: {
-        generated: generatedTotal,
-        published: byStatus('POSTED'),
-        failed: byStatus('FAILED'),
-        scheduled: byStatus('SCHEDULED')
-      },
-      thisWeek,
-      thisMonth,
+      totals: data.totals,
+      thisWeek: this.buildPeriod('week', 0, week.start, week.end, data),
+      thisMonth: this.buildPeriod('month', 0, month.start, month.end, data),
       platformsConnected: { connected, working, needsAttention, total: SUPPORTED_PLATFORMS.length },
-      nextScheduledPost: nextScheduledPost
-        ? { time: nextScheduledPost.postTime, title: nextScheduledPost.content?.text || null }
-        : null
+      nextScheduledPost: data.nextPost || null
     }
   }
 
@@ -220,156 +277,201 @@ export class DashboardService {
     if (!Number.isInteger(n) || n < 0 || n > 120) {
       throw new BadRequestException('offset must be a whole number from 0 to 120')
     }
-    return this.getPeriodStats(userId, period, n)
+    const { start, end } = periodRange(period, n)
+    const [{ data }] = await prisma.$queryRaw<Array<{ data: any }>>`
+      SELECT json_build_object(${this.dailySeriesSql(userId, start, end)}) AS data
+    `
+    return this.buildPeriod(period, n, start, end, data)
   }
 
   // Generated = by created date. Published / failed = by post time.
+  private dailySeriesSql(userId: string, start: Date, end: Date) {
+    return Prisma.sql`
+      'generatedByDay', (
+        SELECT coalesce(json_agg(g), '[]'::json) FROM (
+          SELECT date("createdAt")::text AS day, count(*) AS n
+          FROM "CalendarPost"
+          WHERE "userId" = ${userId} AND "createdAt" >= ${ts(start)} AND "createdAt" < ${ts(end)}
+          GROUP BY 1
+        ) g
+      ),
+      'outcomesByDay', (
+        SELECT coalesce(json_agg(o), '[]'::json) FROM (
+          SELECT date("postTime")::text AS day,
+                 count(*) FILTER (WHERE status = 'POSTED') AS published,
+                 count(*) FILTER (WHERE status = 'FAILED') AS failed
+          FROM "CalendarPost"
+          WHERE "userId" = ${userId} AND status IN ('POSTED', 'FAILED')
+            AND "postTime" >= ${ts(start)} AND "postTime" < ${ts(end)}
+          GROUP BY 1
+        ) o
+      )
+    `
+  }
+
   // Every day in the range is returned, with zeros where nothing happened.
-  private async getPeriodStats(userId: string, period: StatsPeriod, offset: number) {
-    const { start, end } = periodRange(period, offset)
-
-    const [generatedRows, outcomeRows] = await Promise.all([
-      prisma.calendarPost.findMany({
-        where: { userId, createdAt: { gte: start, lt: end } },
-        select: { createdAt: true }
-      }),
-      prisma.calendarPost.findMany({
-        where: { userId, status: { in: ['POSTED', 'FAILED'] }, postTime: { gte: start, lt: end } },
-        select: { postTime: true, status: true }
-      })
-    ])
-
+  private buildPeriod(period: StatsPeriod, offset: number, start: Date, end: Date, data: any) {
     const days = new Map<string, { date: string; generated: number; published: number; failed: number }>()
     for (let t = start.getTime(); t < end.getTime(); t += DAY_MS) {
       const key = dayKey(new Date(t))
       days.set(key, { date: key, generated: 0, published: 0, failed: 0 })
     }
-    for (const row of generatedRows) {
-      const day = days.get(dayKey(row.createdAt))
-      if (day) day.generated += 1
+    for (const row of data.generatedByDay) {
+      const day = days.get(row.day)
+      if (day) day.generated = Number(row.n)
     }
-    for (const row of outcomeRows) {
-      const day = days.get(dayKey(row.postTime))
+    for (const row of data.outcomesByDay) {
+      const day = days.get(row.day)
       if (!day) continue
-      if (row.status === 'POSTED') day.published += 1
-      else day.failed += 1
+      day.published = Number(row.published)
+      day.failed = Number(row.failed)
     }
 
     const list = [...days.values()]
+    const sum = (k: 'generated' | 'published' | 'failed') => list.reduce((s, d) => s + d[k], 0)
     return {
       period,
       offset,
       start: dayKey(start),
       end: dayKey(new Date(end.getTime() - DAY_MS)),
-      generated: generatedRows.length,
-      published: list.reduce((sum, d) => sum + d.published, 0),
-      failed: list.reduce((sum, d) => sum + d.failed, 0),
+      generated: sum('generated'),
+      published: sum('published'),
+      failed: sum('failed'),
       days: list
     }
   }
 
-  // One row per supported platform. Direct platforms (Facebook, LinkedIn, X,
-  // YouTube, Google Business) are read from their own tables — the same
-  // tables their /status endpoints use. Only Outstand platforms come from
-  // SocialAccount.
-  private async getPlatformConnections(userId: string): Promise<PlatformConnection[]> {
-    const now = Date.now()
-    const isExpired = (expiry: Date | null | undefined) => !!expiry && expiry.getTime() <= now
+  // Connection rows for every platform. Direct platforms (Facebook, LinkedIn,
+  // X, YouTube, Google Business) come from their own tables — the same tables
+  // their /status endpoints use. Only Outstand platforms use SocialAccount.
+  private connectionsSql(userId: string) {
+    return Prisma.sql`json_build_object(
+      'social', (
+        SELECT coalesce(json_agg(json_build_object(
+          'platform', platform::text, 'username', username, 'avatarUrl', "avatarUrl", 'status', status
+        )), '[]'::json)
+        FROM "SocialAccount" WHERE "userId" = ${userId}
+      ),
+      'facebookPages', (
+        SELECT coalesce(json_agg(json_build_object(
+          'pageName', fp."pageName", 'pageId', fp."pageId", 'isDefault', fp."isDefault"
+        ) ORDER BY fp."createdAt"), '[]'::json)
+        FROM "FacebookPage" fp
+        JOIN "FacebookAccount" fa ON fa.id = fp."facebookAccountId"
+        WHERE fa."userId" = ${userId}
+      ),
+      'linkedIn', (
+        SELECT json_build_object('tokenExpiry', ${iso('"tokenExpiry"')})
+        FROM "LinkedAccount" WHERE "userId" = ${userId} AND platform = 'LINKEDIN'
+        ORDER BY "createdAt" DESC LIMIT 1
+      ),
+      'x', (
+        SELECT json_build_object(
+          'tokenExpiry', ${iso('"tokenExpiry"')},
+          'hasRefreshToken', coalesce("refreshToken", '') <> '',
+          'username', username, 'name', name,
+          'avatarUrl', "profileImageUrl", 'followers', "followersCount"
+        )
+        FROM "XAccount" WHERE "userId" = ${userId}
+      ),
+      'youtube', (
+        SELECT json_build_object(
+          'tokenExpiry', ${iso('"tokenExpiry"')},
+          'hasRefreshToken', coalesce("refreshToken", '') <> '',
+          'username', "channelTitle", 'avatarUrl', "thumbnailUrl", 'followers', "subscriberCount"
+        )
+        FROM "YoutubeAccount" WHERE "userId" = ${userId}
+      ),
+      'google', (
+        SELECT json_build_object(
+          'tokenExpiry', ${iso('ga."tokenExpiry"')},
+          'hasRefreshToken', coalesce(ga."refreshToken", '') <> '',
+          'locations', (
+            SELECT coalesce(json_agg(l.title ORDER BY l.title), '[]'::json)
+            FROM "GoogleBusinessLocation" l
+            WHERE l."googleBusinessAccountId" = ga.id AND l.selected AND l."canPost"
+          )
+        )
+        FROM "GoogleBusinessAccount" ga WHERE ga."userId" = ${userId}
+      )
+    )`
+  }
 
-    const [socialAccounts, facebookPages, linkedIn, xAccount, youtube, google] = await Promise.all([
-      prisma.$queryRaw<Array<{ platform: string; username: string | null; avatarUrl: string | null; status: string }>>`
-        SELECT platform::text AS platform, username, "avatarUrl", status
-        FROM "SocialAccount"
-        WHERE "userId" = ${userId}
-      `,
-      prisma.facebookPage.findMany({
-        where: { facebookAccount: { userId } },
-        orderBy: { createdAt: 'asc' }
-      }),
-      prisma.linkedAccount.findFirst({
-        where: { userId, platform: 'LINKEDIN' },
-        orderBy: { createdAt: 'desc' }
-      }),
-      prisma.xAccount.findUnique({ where: { userId } }),
-      prisma.youtubeAccount.findUnique({ where: { userId } }),
-      prisma.googleBusinessAccount.findUnique({
-        where: { userId },
-        include: { locations: { where: { selected: true, canPost: true } } }
-      })
-    ])
-
+  private buildConnections(c: any, now: Date): PlatformConnection[] {
+    const isExpired = (expiry: string | null) => !!expiry && new Date(expiry).getTime() <= now.getTime()
+    const toNumber = (v: string | null | undefined) => (v ? Number(v) || 0 : null)
     const empty = (platform: string): PlatformConnection => ({
       platform, connected: false, expired: false, needsAction: null,
       accountCount: 0, username: null, avatarUrl: null, followers: null
     })
-    const toNumber = (v: string | null | undefined) => (v ? Number(v) || 0 : null)
 
     const direct: Record<string, PlatformConnection> = {}
 
-    if (facebookPages.length) {
+    if (c.facebookPages.length) {
+      const main = c.facebookPages.find((p: any) => p.isDefault) || c.facebookPages[0]
       direct.FACEBOOK = {
         ...empty('FACEBOOK'),
         connected: true,
-        accountCount: facebookPages.length,
-        username: (facebookPages.find(p => p.isDefault) || facebookPages[0]).pageName || null
+        accountCount: c.facebookPages.length,
+        username: main.pageName || main.pageId || null
       }
     }
 
-    if (linkedIn) {
-      const expired = isExpired(linkedIn.tokenExpiry)
+    if (c.linkedIn) {
+      const expired = isExpired(c.linkedIn.tokenExpiry)
       direct.LINKEDIN = { ...empty('LINKEDIN'), connected: true, expired, needsAction: expired ? 'RECONNECT' : null, accountCount: 1 }
     }
 
-    if (xAccount) {
-      // X refreshes its token on its own while a refresh token exists.
-      const expired = isExpired(xAccount.tokenExpiry) && !xAccount.refreshToken
+    // X and YouTube refresh their tokens on their own while a refresh token exists.
+    if (c.x) {
+      const expired = isExpired(c.x.tokenExpiry) && !c.x.hasRefreshToken
       direct.X = {
         ...empty('X'),
         connected: true,
         expired,
         needsAction: expired ? 'RECONNECT' : null,
         accountCount: 1,
-        username: xAccount.username || xAccount.name || null,
-        avatarUrl: xAccount.profileImageUrl || null,
-        followers: toNumber(xAccount.followersCount)
+        username: c.x.username || c.x.name || null,
+        avatarUrl: c.x.avatarUrl || null,
+        followers: toNumber(c.x.followers)
       }
     }
 
-    if (youtube) {
-      const expired = isExpired(youtube.tokenExpiry) && !youtube.refreshToken
+    if (c.youtube) {
+      const expired = isExpired(c.youtube.tokenExpiry) && !c.youtube.hasRefreshToken
       direct.YOUTUBE = {
         ...empty('YOUTUBE'),
         connected: true,
         expired,
         needsAction: expired ? 'RECONNECT' : null,
         accountCount: 1,
-        username: youtube.channelTitle || null,
-        avatarUrl: youtube.thumbnailUrl || null,
-        followers: toNumber(youtube.subscriberCount)
+        username: c.youtube.username || null,
+        avatarUrl: c.youtube.avatarUrl || null,
+        followers: toNumber(c.youtube.followers)
       }
     }
 
-    if (google) {
+    if (c.google) {
       // Same rule as GoogleBusinessService.status(): only a chosen,
       // postable location counts as connected.
-      const expired = isExpired(google.tokenExpiry) && !google.refreshToken
-      const hasLocation = google.locations.length > 0
+      const expired = isExpired(c.google.tokenExpiry) && !c.google.hasRefreshToken
+      const locations: string[] = c.google.locations
       direct.GOOGLE_BUSINESS = {
         ...empty('GOOGLE_BUSINESS'),
-        connected: hasLocation,
+        connected: locations.length > 0,
         expired,
-        needsAction: expired ? 'RECONNECT' : hasLocation ? null : 'SELECT_LOCATION',
-        accountCount: google.locations.length,
-        username: google.locations[0]?.title || null
+        needsAction: expired ? 'RECONNECT' : locations.length ? null : 'SELECT_LOCATION',
+        accountCount: locations.length,
+        username: locations[0] || null
       }
     }
 
     return SUPPORTED_PLATFORMS.map(platform => {
       if (DIRECT_PLATFORMS.includes(platform)) return direct[platform] || empty(platform)
 
-      const rows = socialAccounts.filter(a => a.platform === platform)
+      const rows = c.social.filter((a: any) => a.platform === platform)
       if (!rows.length) return empty(platform)
-      const active = rows.filter(a => a.status === 'active')
+      const active = rows.filter((a: any) => a.status === 'active')
       const first = active[0] || rows[0]
       return {
         ...empty(platform),
@@ -417,93 +519,28 @@ export class DashboardService {
     return { message, postsGrowthPct: growthPct, thisWeek, lastWeek }
   }
 
-  private async getRecentActivity(userId: string, today: Date, sevenDaysAgo: Date) {
-    let windowStart = today
-    let entries = await this.buildActivityEntries(userId, windowStart)
+  // Activity is grouped per day in SQL for the last 7 days. Show only today's
+  // entries when there are any, otherwise the whole 7 days. Newest first, max 15.
+  private buildRecentActivity(rows: Array<{ type: string; platform: string | null; day: string; count: number; latest: string }>, today: string) {
+    const todays = rows.filter(r => r.day === today)
+    const chosen = todays.length ? todays : rows
 
-    if (entries.length === 0) {
-      windowStart = sevenDaysAgo
-      entries = await this.buildActivityEntries(userId, windowStart)
-    }
-
-    return entries.sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime()).slice(0, 15)
-  }
-
-  private async buildActivityEntries(userId: string, windowStart: Date) {
-    const [generated, scheduled, posted, failed, reelsQueued] = await Promise.all([
-      prisma.calendarPost.findMany({
-        where: { userId, createdAt: { gte: windowStart } },
-        select: { createdAt: true }
-      }),
-      prisma.calendarPost.findMany({
-        where: { userId, status: 'SCHEDULED', updatedAt: { gte: windowStart } },
-        select: { updatedAt: true }
-      }),
-      prisma.postDelivery.findMany({
-        where: {
-          deliveryStatus: 'PUBLISHED',
-          updatedAt: { gte: windowStart },
-          post: { userId }
-        },
-        select: { updatedAt: true, socialAccount: { select: { platform: true } } }
-      }),
-      prisma.calendarPost.findMany({
-        where: { userId, status: 'FAILED', updatedAt: { gte: windowStart } },
-        select: { updatedAt: true }
-      }),
-      prisma.calendarPost.findMany({
-        where: { userId, type: 'REEL', status: { in: ['SCHEDULED', 'POSTING'] }, createdAt: { gte: windowStart } },
-        select: { createdAt: true }
-      })
-    ])
-
-    const entries: Array<{ type: string; message: string; time: Date }> = []
-
-    this.groupByDay(generated, r => r.createdAt).forEach(({ count, latest }) => {
-      entries.push({ type: 'posts_generated', message: `${count} post${count > 1 ? 's' : ''} generated`, time: latest })
-    })
-
-    this.groupByDay(scheduled, r => r.updatedAt).forEach(({ count, latest }) => {
-      entries.push({ type: 'posts_scheduled', message: `${count} post${count > 1 ? 's' : ''} scheduled for optimal times`, time: latest })
-    })
-
-    const postedByPlatform = new Map<string, Array<{ updatedAt: Date }>>()
-    for (const p of posted) {
-      const platform = p.socialAccount?.platform || 'UNKNOWN'
-      if (!postedByPlatform.has(platform)) postedByPlatform.set(platform, [])
-      postedByPlatform.get(platform)!.push({ updatedAt: p.updatedAt })
-    }
-    for (const [platform, rows] of postedByPlatform) {
-      this.groupByDay(rows, r => r.updatedAt).forEach(({ count, latest }) => {
-        entries.push({ type: 'post_published', message: `${count} post${count > 1 ? 's' : ''} published — ${platform} completed`, time: latest })
-      })
-    }
-
-    this.groupByDay(failed, r => r.updatedAt).forEach(({ count, latest }) => {
-      entries.push({ type: 'post_failed', message: `${count} post${count > 1 ? 's' : ''} failed to publish`, time: latest })
-    })
-
-    this.groupByDay(reelsQueued, r => r.createdAt).forEach(({ count, latest }) => {
-      entries.push({ type: 'reel_queued', message: `${count} reel${count > 1 ? 's' : ''} queued`, time: latest })
-    })
-
-    return entries
-  }
-
-  private groupByDay<T>(rows: T[], getDate: (row: T) => Date) {
-    const groups = new Map<string, { count: number; latest: Date }>()
-    for (const row of rows) {
-      const date = getDate(row)
-      const key = dayKey(date)
-      const existing = groups.get(key)
-      if (!existing) {
-        groups.set(key, { count: 1, latest: date })
-      } else {
-        existing.count += 1
-        if (date > existing.latest) existing.latest = date
+    const plural = (n: number, word: string) => `${n} ${word}${n > 1 ? 's' : ''}`
+    const message = (r: (typeof rows)[number]) => {
+      const n = Number(r.count)
+      switch (r.type) {
+        case 'posts_generated': return `${plural(n, 'post')} generated`
+        case 'posts_scheduled': return `${plural(n, 'post')} scheduled for optimal times`
+        case 'post_published': return `${plural(n, 'post')} published — ${r.platform} completed`
+        case 'post_failed': return `${plural(n, 'post')} failed to publish`
+        default: return `${plural(n, 'reel')} queued`
       }
     }
-    return [...groups.values()]
+
+    return chosen
+      .map(r => ({ type: r.type, message: message(r), time: r.latest }))
+      .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+      .slice(0, 15)
   }
 
   private buildBrandHealth(user: any, postedDaysCount: number, postedLast7Days: number) {
@@ -513,7 +550,7 @@ export class DashboardService {
     const checklist = [
       !!user?.brandName,
       !!user?.brandLogo,
-      !!user?.logo,
+      !!user?.hasLogo,
       !!user?.website,
       !!user?.jobTitle,
       !!user?.industryId,
