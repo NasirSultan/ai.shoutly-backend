@@ -1,0 +1,199 @@
+// Lead finder POC schema.
+//
+// Every model here is meant to be pasted into ai.shoutly-backend/prisma/schema.prisma.
+// Names avoid Shoutly's existing `Lead` model (contact-form leads), and every table
+// is mapped to a `lead_finder_*` name so they sit together in the database.
+//
+// `userId` is a plain string in the POC (there is no User table here). After
+// integration, add `user User @relation(fields: [userId], references: [id], onDelete: Cascade)`
+// on SearchProfile, ProfileCrawlJob and FinderLead.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LeadPlatform {
+  REDDIT
+  FACEBOOK
+}
+
+enum CrawlJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// The AI's verdict on a post (shared by every user who finds it).
+enum LeadClassification {
+  GENUINE_LEAD
+  TANGENTIAL_MENTION
+  DISCUSSION_ONLY
+}
+
+enum LeadSentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+enum FinderLeadStatus {
+  NEW
+  REPLIED
+  DISMISSED
+}
+
+/// What a user searches for: keywords, subreddits and words to exclude.
+model SearchProfile {
+  id          String         @id @default(uuid())
+  userId      String
+  name        String
+  websiteUrl  String?
+  /// What the business sells, from the website analysis. Shown to the user only.
+  summary     String?
+  keywords    String[]
+  subreddits  String[]
+  exclusions  String[]
+  platforms   LeadPlatform[]
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  matches FinderLeadProfile[]
+
+  @@index([userId])
+  @@map("lead_finder_search_profiles")
+}
+
+/// One website analysis. While PENDING/RUNNING, a second request for the same
+/// (userId, normalizedUrl) reuses this row instead of starting another job.
+model ProfileCrawlJob {
+  id            String         @id @default(uuid())
+  userId        String
+  normalizedUrl String
+  status        CrawlJobStatus @default(PENDING)
+  /// { summary, keywords, subreddits, exclusions } once COMPLETED
+  result        Json?
+  error         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([userId, normalizedUrl, status])
+  @@map("lead_finder_crawl_jobs")
+}
+
+/// A public post, stored once no matter how many users or queries find it.
+/// Content is written once and never overwritten; a re-fetch only bumps lastSeenAt.
+model SocialRawPost {
+  id              String              @id @default(uuid())
+  platform        LeadPlatform
+  /// The platform's own post id (Reddit t3_ id, Facebook post id)
+  externalId      String
+  /// Subreddit name, or the Facebook group/page when known
+  source          String?
+  title           String?
+  body            String
+  /// Display name of the poster only. Profiles are never looked up or stored.
+  author          String?
+  url             String
+  postedAt        DateTime?
+  platformScore   Int                 @default(0)
+  commentCount    Int                 @default(0)
+  /// Same author + same title: used to show cross-posts as one lead
+  dedupeKey       String
+  classification  LeadClassification
+  /// 0-100: how clearly the poster wants to buy or hire
+  intentScore     Int
+  sentiment       LeadSentiment
+  sentimentReason String?
+  summary         String?
+  /// What they need, in a few words (null when not a lead)
+  need            String?
+  fetchedAt       DateTime            @default(now())
+  lastSeenAt      DateTime            @default(now())
+
+  poolLinks LeadPoolPost[]
+  leads     FinderLead[]
+
+  @@unique([platform, externalId])
+  @@index([fetchedAt])
+  @@map("lead_finder_raw_posts")
+}
+
+/// Cache entry: when a normalized query was last fetched. Shared by all users.
+model LeadPool {
+  queryKey  String       @id
+  platform  LeadPlatform
+  fetchedAt DateTime
+
+  posts LeadPoolPost[]
+
+  @@map("lead_finder_lead_pool")
+}
+
+model LeadPoolPost {
+  queryKey  String
+  rawPostId String
+  /// 0-100: how well the post's need matches this query's keywords. Lives on the
+  /// link, not the post, because the same post can be relevant to one query and not another.
+  relevance Int    @default(0)
+
+  pool    LeadPool      @relation(fields: [queryKey], references: [queryKey], onDelete: Cascade)
+  rawPost SocialRawPost @relation(fields: [rawPostId], references: [id], onDelete: Cascade)
+
+  @@id([queryKey, rawPostId])
+  @@map("lead_finder_lead_pool_posts")
+}
+
+/// A post as one user's lead. Status is never reset by a later re-match.
+model FinderLead {
+  id        String           @id @default(uuid())
+  userId    String
+  rawPostId String
+  /// Copied from the raw post so cross-posts collapse into one lead per user
+  dedupeKey String
+  status    FinderLeadStatus @default(NEW)
+  /// Intent score (0-100) of the post
+  score     Int
+  /// Relevance (0-100) to the profile's keywords when the lead was first matched
+  relevance Int              @default(0)
+  /// "Not a real lead" feedback
+  notALead  Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  rawPost  SocialRawPost       @relation(fields: [rawPostId], references: [id], onDelete: Cascade)
+  profiles FinderLeadProfile[]
+
+  @@unique([userId, rawPostId])
+  @@unique([userId, dedupeKey])
+  @@index([userId, status, createdAt])
+  @@map("lead_finder_leads")
+}
+
+/// Which of the user's search profiles matched a lead.
+model FinderLeadProfile {
+  leadId    String
+  profileId String
+
+  lead    FinderLead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  profile SearchProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, profileId])
+  @@map("lead_finder_lead_profiles")
+}
+
+/// Apify runs per day, for watching cost.
+model LeadFinderApiUsage {
+  date      String
+  endpoint  String
+  callCount Int    @default(0)
+
+  @@id([date, endpoint])
+  @@map("lead_finder_api_usage")
+}

@@ -1,0 +1,23 @@
+# Local Postgres + Redis for the lead finder POC.
+# Ports are shifted (5433 / 6380) so they don't clash with anything else on this machine.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: leadfinder
+      POSTGRES_PASSWORD: leadfinder
+      POSTGRES_DB: leadfinder
+    ports:
+      - '5433:5432'
+    volumes:
+      - lead_finder_pg:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - '6380:6379'
+
+volumes:
+  lead_finder_pg:
