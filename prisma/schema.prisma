@@ -32,6 +32,9 @@ model User {
   // The user's own keyword list (max 8). Starts as the AI's suggestions,
   // then only the user changes it; new AI checks never overwrite it.
   watcherKeywords  Json?
+  // How this user analyses their business: by website or by typing a
+  // description. Set by the first successful analysis, then locked.
+  watcherSource    WatcherSource?
   websiteSnapshots WebsiteSnapshot[]
   businessDescription BusinessDescription?
   primaryColor     String?
@@ -851,6 +854,11 @@ model BusinessDescription {
   analyzedAt  DateTime
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+enum WatcherSource {
+  WEBSITE
+  DESCRIPTION
 }
 
 enum LeadStatus {
