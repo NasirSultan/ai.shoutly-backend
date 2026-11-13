@@ -22,6 +22,9 @@ export function sameWebsite(a: string, b: string): boolean {
 
 export const TARGET_AUDIENCE_COUNT = 4
 export const KEYWORD_COUNT = 5
+// A user's own list can hold more than the AI suggests.
+export const USER_KEYWORD_MAX = 8
+export const KEYWORD_MAX_LENGTH = 40
 
 export interface WebsiteAnalysis {
   summary: string
@@ -45,12 +48,15 @@ export function readTargetAudiences(stored: unknown): string[] | null {
   return names.length > 0 ? names : null
 }
 
-// Saved snapshots keep the keywords in the `keywords` JSON column. Lowercased,
-// without "#" and de-duplicated. Anything that isn't a list of words counts as missing.
-export function readKeywords(stored: unknown): string[] | null {
+// Cleans a keyword list from the AI, the database or the user: lowercased,
+// without "#", single spaces, de-duplicated, at most `max`. Anything that
+// isn't a list of words counts as missing.
+export function readKeywords(stored: unknown, max = KEYWORD_COUNT): string[] | null {
   if (!Array.isArray(stored)) return null
-  const words = stored.map((v) => text(v, 60).replace(/^#+/, '').toLowerCase()).filter(Boolean)
-  const unique = [...new Set(words)].slice(0, KEYWORD_COUNT)
+  const words = stored
+    .map((v) => text(v, KEYWORD_MAX_LENGTH).replace(/^#+/, '').replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter(Boolean)
+  const unique = [...new Set(words)].slice(0, max)
   return unique.length > 0 ? unique : null
 }
 
