@@ -29,7 +29,11 @@ model User {
   // as https://mybusiness.com). Copied from `website` on first use, then
   // locked: only an admin can change it, and editing the profile doesn't.
   watcherWebsite   String?
+  // The user's own keyword list (max 8). Starts as the AI's suggestions,
+  // then only the user changes it; new AI checks never overwrite it.
+  watcherKeywords  Json?
   websiteSnapshots WebsiteSnapshot[]
+  businessDescription BusinessDescription?
   primaryColor     String?
   badgeStyle       String?
   textColor        String?
@@ -831,6 +835,22 @@ model WebsiteSnapshot {
 
   @@unique([userId, url])
   @@index([userId])
+}
+
+// A business described in the owner's own words (Website Watcher), for users
+// who'd rather type than give a website. One per user; the AI analysis is
+// reused while the description stays the same.
+model BusinessDescription {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  description String
+  summary     String
+  audience    Json
+  keywords    Json
+  analyzedAt  DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 enum LeadStatus {
