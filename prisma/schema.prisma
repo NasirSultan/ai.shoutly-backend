@@ -822,6 +822,8 @@ model WebsiteSnapshot {
   // AI analysis of `content`, reused when the page hasn't changed.
   summary       String?
   audience      Json?
+  // 5 service keywords, e.g. ["social media management", "auto posting"].
+  keywords      Json?
   lastChangedAt DateTime?
   lastCheckedAt DateTime?
   createdAt     DateTime  @default(now())
