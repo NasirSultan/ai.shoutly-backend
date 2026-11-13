@@ -18,7 +18,9 @@ import { AiUsageLogService } from '../ai-usage/ai-usage-log.service'
 import { RedisService } from '../common/redis/redis.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import {
+  KEYWORD_COUNT,
   parseAnalysis,
+  readKeywords,
   readTargetAudiences,
   sameWebsite,
   TARGET_AUDIENCE_COUNT,
@@ -75,6 +77,7 @@ export class WebsiteWatcherService {
             url: snapshot.url,
             summary: snapshot.summary,
             targetAudiences: readTargetAudiences(snapshot.audience),
+            keywords: readKeywords(snapshot.keywords),
             lastChangedAt: snapshot.lastChangedAt,
             lastCheckedAt: snapshot.lastCheckedAt ?? snapshot.updatedAt,
           }
@@ -193,6 +196,7 @@ export class WebsiteWatcherService {
         content,
         summary: analysis.summary,
         audience: analysis.targetAudiences,
+        keywords: analysis.keywords,
         lastChangedAt: checkedAt,
         lastCheckedAt: checkedAt,
       },
@@ -205,6 +209,7 @@ export class WebsiteWatcherService {
       removed: [] as string[],
       summary: analysis.summary,
       targetAudiences: analysis.targetAudiences,
+      keywords: analysis.keywords,
       lastChangedAt: checkedAt,
       previousCheckedAt: null,
     }
@@ -216,6 +221,7 @@ export class WebsiteWatcherService {
       content: string
       summary: string | null
       audience: Prisma.JsonValue
+      keywords: Prisma.JsonValue
       lastChangedAt: Date | null
       lastCheckedAt: Date | null
       updatedAt: Date
@@ -231,14 +237,17 @@ export class WebsiteWatcherService {
       // one. Only a snapshot saved before analyses were stored gets one now.
       let summary = snapshot.summary
       let targetAudiences = readTargetAudiences(snapshot.audience)
-      if (!summary || !targetAudiences) {
+      let keywords = readKeywords(snapshot.keywords)
+      // Snapshots saved before keywords existed get a fresh analysis once.
+      if (!summary || !targetAudiences || !keywords) {
         const analysis = await this.analyze(content)
         summary = analysis.summary
         targetAudiences = analysis.targetAudiences
+        keywords = analysis.keywords
       }
       await prisma.websiteSnapshot.update({
         where: { id: snapshot.id },
-        data: { summary, audience: targetAudiences, lastCheckedAt: checkedAt },
+        data: { summary, audience: targetAudiences, keywords, lastCheckedAt: checkedAt },
       })
       return {
         status: 'unchanged' as const,
@@ -248,6 +257,7 @@ export class WebsiteWatcherService {
         removed: [] as string[],
         summary,
         targetAudiences,
+        keywords,
         lastChangedAt: snapshot.lastChangedAt,
         previousCheckedAt,
       }
@@ -261,6 +271,7 @@ export class WebsiteWatcherService {
         content,
         summary: analysis.summary,
         audience: analysis.targetAudiences,
+        keywords: analysis.keywords,
         lastChangedAt: checkedAt,
         lastCheckedAt: checkedAt,
       },
@@ -272,13 +283,14 @@ export class WebsiteWatcherService {
       ...diff,
       summary: analysis.summary,
       targetAudiences: analysis.targetAudiences,
+      keywords: analysis.keywords,
       lastChangedAt: checkedAt,
       previousCheckedAt,
     }
   }
 
-  // One DeepSeek call returns what the website is, the 4 audiences to target
-  // and, when the page changed, a summary of the change.
+  // One DeepSeek call returns what the website is, the 4 audiences to target,
+  // its 5 service keywords and, when the page changed, a summary of the change.
   private async analyze(content: string, diff?: { added: string[]; removed: string[] }): Promise<WebsiteAnalysis> {
     const changePart = diff
       ? `\n\nThe website changed since the last check.\nLines added:\n${diff.added.join('\n').slice(0, 3000) || '(none)'}\n\nLines removed:\n${diff.removed.join('\n').slice(0, 3000) || '(none)'}`
@@ -292,13 +304,21 @@ ${content.slice(0, CONTENT_CHAR_LIMIT)}${changePart}
 Reply with JSON only, in this exact shape:
 {
   "summary": "2-4 sentences in clear English: what this business is and what it offers",
-  "targetAudiences": ["exactly ${TARGET_AUDIENCE_COUNT} audience names"]${diff ? ',\n  "changeSummary": "2-4 sentences on what actually changed on the website"' : ''}
+  "targetAudiences": ["exactly ${TARGET_AUDIENCE_COUNT} audience names"],
+  "keywords": ["exactly ${KEYWORD_COUNT} keywords"]${diff ? ',\n  "changeSummary": "2-4 sentences on what actually changed on the website"' : ''}
 }
 
 Rules for targetAudiences:
 - Exactly ${TARGET_AUDIENCE_COUNT} names, most valuable first.
 - Each name is tied to one service or product this website offers, and says who wants it.
 - Each name is short (at most 8 words) and starts with who they are, e.g. "Businesses who want daily auto-posting", "Businesses who want their logo on every post", "People who want personal training", "Parents looking for weekend kids' classes".
+
+Rules for keywords:
+- Exactly ${KEYWORD_COUNT} keywords, the most important service first.
+- Each keyword names one service or product this website sells, in 1-3 words, e.g. "social media management", "wedding cakes", "personal training", "website design".
+- Lowercase, no hashtags, no quotes, no brand or company names.
+- Each keyword covers a different service; no two mean the same thing.
+
 - Base everything on the website content above.`
 
     const step = diff ? 'website_watcher_update_analysis' : 'website_watcher_analysis'

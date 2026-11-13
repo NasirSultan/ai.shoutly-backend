@@ -21,12 +21,16 @@ export function sameWebsite(a: string, b: string): boolean {
 }
 
 export const TARGET_AUDIENCE_COUNT = 4
+export const KEYWORD_COUNT = 5
 
 export interface WebsiteAnalysis {
   summary: string
   // 4 short audience names, each tied to a service the website offers,
   // e.g. "Businesses who want their logo on every post".
   targetAudiences: string[]
+  // 5 short keywords (1-3 words), each naming a service or product the
+  // website sells, most important first, e.g. "social media management".
+  keywords: string[]
   changeSummary: string | null
 }
 
@@ -41,6 +45,15 @@ export function readTargetAudiences(stored: unknown): string[] | null {
   return names.length > 0 ? names : null
 }
 
+// Saved snapshots keep the keywords in the `keywords` JSON column. Lowercased,
+// without "#" and de-duplicated. Anything that isn't a list of words counts as missing.
+export function readKeywords(stored: unknown): string[] | null {
+  if (!Array.isArray(stored)) return null
+  const words = stored.map((v) => text(v, 60).replace(/^#+/, '').toLowerCase()).filter(Boolean)
+  const unique = [...new Set(words)].slice(0, KEYWORD_COUNT)
+  return unique.length > 0 ? unique : null
+}
+
 // The model's JSON is untrusted: keep only the expected fields, typed and
 // size-limited, so the API response shape never depends on what it returned.
 export function parseAnalysis(raw: string, expectChangeSummary: boolean): WebsiteAnalysis | null {
@@ -52,11 +65,13 @@ export function parseAnalysis(raw: string, expectChangeSummary: boolean): Websit
   }
   const summary = text(data?.summary, 1500)
   const targetAudiences = readTargetAudiences(data?.targetAudiences)
-  if (!summary || !targetAudiences) return null
+  const keywords = readKeywords(data?.keywords)
+  if (!summary || !targetAudiences || !keywords) return null
 
   return {
     summary,
     targetAudiences,
+    keywords,
     changeSummary: expectChangeSummary ? text(data?.changeSummary, 1000) || null : null,
   }
 }
