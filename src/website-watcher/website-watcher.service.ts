@@ -77,6 +77,8 @@ export class WebsiteWatcherService {
       isAdmin,
       dailyLimit: isAdmin ? null : DAILY_CHECK_LIMIT,
       checksLeftToday: isAdmin ? null : await this.checksLeftToday(user.id),
+      // null = not chosen yet (show both options). Admins are never locked.
+      source: isAdmin ? null : user.watcherSource,
       keywords: readKeywords(user.watcherKeywords, USER_KEYWORD_MAX),
       lastCheck: snapshot
         ? {
@@ -103,6 +105,9 @@ export class WebsiteWatcherService {
 
     const isAdmin = requestUser.role === 'SUPERADMIN'
     const user = await this.loadUser(requestUser.id)
+    if (!isAdmin && user.watcherSource === 'WEBSITE') {
+      throw new ForbiddenException("You chose to analyse your website. This can't be changed.")
+    }
 
     const saved = await prisma.businessDescription.findUnique({ where: { userId: user.id } })
     if (saved && saved.description === description) {
@@ -140,7 +145,10 @@ export class WebsiteWatcherService {
       update: data,
     })
 
-    if (!isAdmin) await this.recordCheck(user.id)
+    if (!isAdmin) {
+      await this.lockSource(user, 'DESCRIPTION')
+      await this.recordCheck(user.id)
+    }
 
     return {
       status: 'analyzed' as const,
@@ -160,6 +168,16 @@ export class WebsiteWatcherService {
     await this.loadUser(requestUser.id)
     await prisma.user.update({ where: { id: requestUser.id }, data: { watcherKeywords: keywords } })
     return { keywords }
+  }
+
+  // The first successful analysis decides how this user works from now on.
+  // Set only after success, so a failed attempt never locks anyone in.
+  private async lockSource(
+    user: { id: string; watcherSource: 'WEBSITE' | 'DESCRIPTION' | null },
+    source: 'WEBSITE' | 'DESCRIPTION',
+  ) {
+    if (user.watcherSource) return
+    await prisma.user.updateMany({ where: { id: user.id, watcherSource: null }, data: { watcherSource: source } })
   }
 
   // The user's own list wins. A user who has none yet gets the AI's
@@ -197,6 +215,9 @@ export class WebsiteWatcherService {
 
     const isAdmin = requestUser.role === 'SUPERADMIN'
     const user = await this.loadUser(requestUser.id)
+    if (!isAdmin && user.watcherSource === 'DESCRIPTION') {
+      throw new ForbiddenException("You chose to describe your business yourself. This can't be changed.")
+    }
     const url = this.resolveWebsite(user, rawUrl, isAdmin)
 
     if (!isAdmin && (await this.checksLeftToday(user.id)) === 0) {
@@ -224,7 +245,10 @@ export class WebsiteWatcherService {
       ? await this.compareWithSnapshot(snapshot, currentContent, checkedAt)
       : await this.saveFirstSnapshot(user.id, url, currentContent, checkedAt)
 
-    if (!isAdmin) await this.recordCheck(user.id)
+    if (!isAdmin) {
+      await this.lockSource(user, 'WEBSITE')
+      await this.recordCheck(user.id)
+    }
 
     return {
       url,
@@ -255,7 +279,7 @@ export class WebsiteWatcherService {
   private async loadUser(userId: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, website: true, watcherWebsite: true, watcherKeywords: true },
+      select: { id: true, website: true, watcherWebsite: true, watcherKeywords: true, watcherSource: true },
     })
     if (!user) throw new NotFoundException('User not found')
     return user
