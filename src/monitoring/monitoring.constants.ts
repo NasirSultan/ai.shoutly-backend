@@ -7,11 +7,12 @@ export const CRON_HEARTBEATS = {
   sendDueDripEmails: { label: 'Onboarding emails (every minute)', staleAfterMs: 10 * 60 * 1000 },
   sendDailyPostSummaries: { label: 'Daily post summary emails (every 10 minutes)', staleAfterMs: 35 * 60 * 1000 },
   cleanupOldBookings: { label: 'Demo booking cleanup (daily)', staleAfterMs: 26 * 60 * 60 * 1000 },
+  purgeLeadFinderPosts: { label: 'Lead Finder old post cleanup (daily)', staleAfterMs: 26 * 60 * 60 * 1000 },
 } as const
 export type CronName = keyof typeof CRON_HEARTBEATS
 
 // Outside services whose failures are counted.
-export const EXTERNAL_SERVICES = ['outstand', 'brevo', 'deepseek', 'tavily'] as const
+export const EXTERNAL_SERVICES = ['outstand', 'brevo', 'deepseek', 'tavily', 'apify'] as const
 export type ExternalService = (typeof EXTERNAL_SERVICES)[number]
 
 export const SERVICE_ERROR_WINDOW_MS = 15 * 60 * 1000
