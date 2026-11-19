@@ -130,6 +130,8 @@ import { YoutubeService } from '../social-media/youtube/youtube.service'
 import { GoogleBusinessService } from '../social-media/google-business/google-business.service'
 import { XService } from '../social-media/x/x.service'
 import { FacebookService } from '../social-media/facebook/facebook.service'
+import { TiktokService } from '../social-media/tiktok/tiktok.service'
+import { BlueskyService } from '../social-media/bluesky/bluesky.service'
 import { MonitoringService } from '../monitoring/monitoring.service'
 import { captureError } from '../monitoring/sentry'
 
@@ -159,6 +161,8 @@ export class PostWorker implements OnModuleInit {
     private readonly googleBusinessService: GoogleBusinessService,
     private readonly xService: XService,
     private readonly facebookService: FacebookService,
+    private readonly tiktokService: TiktokService,
+    private readonly blueskyService: BlueskyService,
     private readonly monitoring: MonitoringService,
   ) {
     console.log('[Worker Lifecycle] PostWorker Instantiated by NestJS Runtime! 🚀');
@@ -246,6 +250,8 @@ export class PostWorker implements OnModuleInit {
             youtubeAccount: true,
             xAccount: true,
             facebookAccount: { include: { pages: { orderBy: { createdAt: 'asc' } } } },
+            tiktokAccount: true,
+            blueskyAccount: true,
             googleBusinessAccount: { include: { locations: { where: { selected: true, canPost: true } } } },
           },
         },
@@ -272,7 +278,10 @@ export class PostWorker implements OnModuleInit {
     const targetPlatforms = post.targetPlatforms ?? []
     const activeAccounts = user.socialAccounts.filter((acc) => {
       // These platforms are published directly below, not through Outstand.
-      if (acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X' || acc.platform === 'FACEBOOK') return false
+      if (
+        acc.platform === 'YOUTUBE' || acc.platform === 'GOOGLE_BUSINESS' || acc.platform === 'X' ||
+        acc.platform === 'FACEBOOK' || acc.platform === 'TIKTOK' || acc.platform === 'BLUESKY'
+      ) return false
       if (!targetPlatforms.length) return true
       return !!acc.platform && targetPlatforms.includes(acc.platform)
     })
@@ -283,14 +292,22 @@ export class PostWorker implements OnModuleInit {
     const wantsGoogle = !targetPlatforms.length || targetPlatforms.includes('GOOGLE_BUSINESS')
     const wantsX = !targetPlatforms.length || targetPlatforms.includes('X')
     const wantsFacebook = !targetPlatforms.length || targetPlatforms.includes('FACEBOOK')
+    // TikTok only when chosen on purpose: it needs a privacy choice per post.
+    const wantsTiktok = targetPlatforms.includes('TIKTOK')
+    const wantsBluesky = !targetPlatforms.length || targetPlatforms.includes('BLUESKY')
     const linkedInAccount = wantsLinkedIn ? user.linkedAccounts[0] : undefined
     const youtubeAccount = wantsYoutube ? user.youtubeAccount : undefined
     const googleLocations = wantsGoogle ? user.googleBusinessAccount?.locations ?? [] : []
     const xAccount = wantsX ? user.xAccount : undefined
     const facebookPages = wantsFacebook ? user.facebookAccount?.pages ?? [] : []
     const facebookPage = facebookPages.find((p) => p.isDefault) || facebookPages[0]
+    const tiktokAccount = wantsTiktok ? user.tiktokAccount : undefined
+    const blueskyAccount = wantsBluesky ? user.blueskyAccount : undefined
 
-    if (!activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length && !xAccount && !facebookPage) {
+    if (
+      !activeAccounts.length && !linkedInAccount && !youtubeAccount && !googleLocations.length &&
+      !xAccount && !facebookPage && !tiktokAccount && !blueskyAccount
+    ) {
       throw new Error(`User ${user.id} has no connected channels for the selected platforms`)
     }
 
@@ -370,6 +387,20 @@ export class PostWorker implements OnModuleInit {
         this.facebookService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined, {
           isVideo: !!post.reel,
         }),
+      )
+    }
+
+    if (tiktokAccount) {
+      // TikTok needs the user to choose who can watch each video, so scheduled
+      // posts can't go there automatically.
+      await attempt([{ platform: 'TIKTOK', accountName: tiktokAccount.username ? `@${tiktokAccount.username}` : 'TikTok' }], async () => {
+        throw new Error('Post TikTok from Custom posting so you can choose who can watch it.')
+      })
+    }
+
+    if (blueskyAccount) {
+      await attempt([{ platform: 'BLUESKY', accountName: blueskyAccount.handle ? `@${blueskyAccount.handle}` : 'Bluesky' }], () =>
+        this.blueskyService.publishForUser(user.id, container.content, mediaUrl ? [mediaUrl] : undefined),
       )
     }
 

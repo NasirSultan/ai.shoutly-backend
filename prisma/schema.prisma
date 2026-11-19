@@ -29,7 +29,14 @@ model User {
   // as https://mybusiness.com). Copied from `website` on first use, then
   // locked: only an admin can change it, and editing the profile doesn't.
   watcherWebsite   String?
+  // The user's own keyword list (max 8). Starts as the AI's suggestions,
+  // then only the user changes it; new AI checks never overwrite it.
+  watcherKeywords  Json?
+  // How this user analyses their business: by website or by typing a
+  // description. Set by the first successful analysis, then locked.
+  watcherSource    WatcherSource?
   websiteSnapshots WebsiteSnapshot[]
+  businessDescription BusinessDescription?
   primaryColor     String?
   badgeStyle       String?
   textColor        String?
@@ -43,6 +50,8 @@ model User {
   youtubeAccount   YoutubeAccount?
   googleBusinessAccount GoogleBusinessAccount?
   xAccount         XAccount?
+  tiktokAccount    TiktokAccount?
+  blueskyAccount   BlueskyAccount?
   emailNotification  Boolean        @default(true)
   pushNotification   Boolean        @default(false)
   weeklyNotification Boolean        @default(true)
@@ -406,12 +415,70 @@ model CalendarPost {
   postTime      DateTime
   status        PostStatus  @default(SCHEDULED)
   targetPlatforms SocialPlatform[] @default([])
+  publishedPlatforms String[] @default([])
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
   @@index([userId])
   @@index([subIndustryId])
   @@index([postTime])
+}
+
+model TiktokAccount {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken     String
+  refreshToken    String?
+  scopes          String
+  tokenExpiry     DateTime?
+  refreshExpiry   DateTime?
+  openId          String?
+  unionId         String?
+  username        String?
+  displayName     String?
+  avatarUrl       String?
+  followerCount   String?
+  followingCount  String?
+  likesCount      String?
+  videoCount      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model BlueskyAccount {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  did             String
+  handle          String
+  pdsUrl          String
+  // "oauth" (AT Protocol OAuth, session lives in BlueskyOAuthSession) or
+  // "app_password" (legacy createSession; accessJwt/refreshJwt below).
+  authType        String    @default("app_password")
+  // "active" | "expired" — expired means the user must reconnect.
+  status          String    @default("active")
+  lastError       String?
+  accessJwt       String?
+  refreshJwt      String?
+  tokenExpiry     DateTime?
+  displayName     String?
+  avatarUrl       String?
+  followersCount  String?
+  followsCount    String?
+  postsCount      String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+// AT Protocol OAuth session store (@atproto/oauth-client-node), keyed by DID.
+// `data` holds the DPoP key + token set as JSON, encrypted when
+// TOKEN_ENCRYPTION_KEY is set.
+model BlueskyOAuthSession {
+  did       String   @id
+  data      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model XAccount {
@@ -762,6 +829,8 @@ model WebsiteSnapshot {
   // AI analysis of `content`, reused when the page hasn't changed.
   summary       String?
   audience      Json?
+  // 5 service keywords, e.g. ["social media management", "auto posting"].
+  keywords      Json?
   lastChangedAt DateTime?
   lastCheckedAt DateTime?
   createdAt     DateTime  @default(now())
@@ -769,6 +838,27 @@ model WebsiteSnapshot {
 
   @@unique([userId, url])
   @@index([userId])
+}
+
+// A business described in the owner's own words (Website Watcher), for users
+// who'd rather type than give a website. One per user; the AI analysis is
+// reused while the description stays the same.
+model BusinessDescription {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  description String
+  summary     String
+  audience    Json
+  keywords    Json
+  analyzedAt  DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum WatcherSource {
+  WEBSITE
+  DESCRIPTION
 }
 
 enum LeadStatus {
