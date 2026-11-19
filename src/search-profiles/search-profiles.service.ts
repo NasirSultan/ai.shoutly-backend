@@ -15,6 +15,9 @@ const MAX_PROFILES_PER_USER = 10
 // Suggestions only change when the user's analysis or keywords change.
 const SUGGESTION_CACHE_SECONDS = 24 * 60 * 60
 const SUBREDDIT_NAME = /^[A-Za-z0-9_]{2,21}$/
+// Words that also show up in real buyers' posts ("a free app", "need help"),
+// so they are never suggested as exclusions even if the AI proposes them.
+const TOO_BROAD_EXCLUSIONS = new Set(['free', 'cheap', 'help', 'need', 'hire', 'hiring', 'looking', 'app', 'website', 'job'])
 
 const deepseek = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
@@ -195,7 +198,7 @@ Return ONLY a JSON object:
   "name": "short profile name, e.g. \\"Web development leads\\"",
   "keywords": ["4-6 short search phrases a BUYER would write, e.g. \\"hiring web developer\\", \\"need a website built\\", \\"looking for seo agency\\""],
   "subreddits": ["4-6 real, active subreddit names (no r/ prefix) where people post requests to hire this kind of work, e.g. forhire, smallbusiness"],
-  "exclusions": ["3-6 words or phrases that mark posts to skip, e.g. \\"[for hire]\\", \\"internship\\""]
+  "exclusions": ["3-6 specific phrases that only appear in posts to skip (people selling their own services or looking for a job), e.g. \\"[for hire]\\", \\"looking for work\\", \\"open to work\\". Never common single words like \\"free\\" or \\"cheap\\", which also appear in real buyers' posts"]
 }
 Rules: phrases in plain lowercase English, each under 6 words. Never include the business's own name.`
 
@@ -239,7 +242,9 @@ Rules: phrases in plain lowercase English, each under 6 words. Never include the
       subreddits: normalizeTerms(Array.isArray(data?.subreddits) ? data.subreddits.map(String) : [])
         .filter((s) => SUBREDDIT_NAME.test(s))
         .slice(0, 6),
-      exclusions: cleanList(Array.isArray(data?.exclusions) ? data.exclusions : [], 6, 50).map((e) => e.toLowerCase()),
+      exclusions: cleanList(Array.isArray(data?.exclusions) ? data.exclusions : [], 6, 50)
+        .map((e) => e.toLowerCase())
+        .filter((e) => !TOO_BROAD_EXCLUSIONS.has(e)),
     }
   }
 

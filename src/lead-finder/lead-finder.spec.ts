@@ -75,4 +75,11 @@ describe('exclusions', () => {
     expect(matchesExclusion('[FOR HIRE] React dev', ['[for hire]'])).toBe(true)
     expect(matchesExclusion('[Hiring] React dev', ['[for hire]'])).toBe(false)
   })
+
+  it('matches whole words and phrases only', () => {
+    expect(matchesExclusion('Need a freelance designer', ['free'])).toBe(false)
+    expect(matchesExclusion('Build a free music app', ['free'])).toBe(true)
+    expect(matchesExclusion('No internships please', ['internship'])).toBe(false)
+    expect(matchesExclusion('I am looking for work as a dev', ['looking for work'])).toBe(true)
+  })
 })

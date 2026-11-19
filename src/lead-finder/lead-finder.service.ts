@@ -284,10 +284,17 @@ export class LeadFinderService {
   }
 }
 
+/**
+ * True when the text contains any exclusion as a whole word or phrase,
+ * case-insensitive: "free" matches "a free app" but not "freelance".
+ */
 export function matchesExclusion(text: string, exclusions: string[]): boolean {
   if (!exclusions.length) return false
   const haystack = text.toLowerCase()
-  return exclusions.some((word) => haystack.includes(word))
+  return exclusions.some((phrase) => {
+    const escaped = phrase.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`).test(haystack)
+  })
 }
 
 function snippet(body: string, max = 320) {
