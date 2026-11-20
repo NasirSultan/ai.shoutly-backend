@@ -42,6 +42,8 @@ import { MetaModule } from './meta/meta.module'
 import { MonitoringCoreModule } from './monitoring/monitoring-core.module'
 import { MonitoringModule } from './monitoring/monitoring.module'
 import { AdminAgentModule } from './admin-agent/admin-agent.module'
+import { SearchProfilesModule } from './search-profiles/search-profiles.module'
+import { LeadFinderModule } from './lead-finder/lead-finder.module'
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), EventEmitterModule.forRoot(),LogoOverlayModule, FacebookModule, LinkedInModule, YoutubeModule, GoogleBusinessModule, XModule, TiktokModule, BlueskyModule, IndustriesModule, AuthModule,
@@ -75,6 +77,9 @@ import { AdminAgentModule } from './admin-agent/admin-agent.module'
   MonitoringCoreModule,
   MonitoringModule,
   AdminAgentModule,
+  // Lead Finder: Reddit/Facebook leads (paid plans)
+  SearchProfilesModule,
+  LeadFinderModule,
 ],
   controllers: [AppController],
   providers: [
