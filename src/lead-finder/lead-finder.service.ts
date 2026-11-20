@@ -1,6 +1,8 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common'
+import { HttpException, HttpStatus, Injectable, Logger, NotFoundException } from '@nestjs/common'
 import { FinderLeadStatus, LeadPlatform, Prisma, SearchProfile } from '@prisma/client'
 import { prisma } from '../lib/prisma'
+import { RedisService } from '../common/redis/redis.service'
+import { readDailySearch, recordDailySearch, setPendingSearch, takePendingSearch } from './daily-search'
 import { LeadFetchQueue } from './lead-fetch.queue'
 import { LeadFinderLimitsService } from './lead-finder-limits.service'
 import { leadFinderConfig } from './lead-finder.types'
@@ -28,6 +30,7 @@ export class LeadFinderService {
   constructor(
     private readonly queue: LeadFetchQueue,
     private readonly limits: LeadFinderLimitsService,
+    private readonly redis: RedisService,
   ) {}
 
   /**
@@ -39,6 +42,16 @@ export class LeadFinderService {
     // Each fetch costs Apify runs and AI calls, so it is checked here, not only in the UI.
     await assertLeadFinderAccess(user)
     const profile = await this.getOwnedProfile(user.id, profileId)
+    const isAdmin = user.role === 'SUPERADMIN'
+    // An earlier search that finished after the page was closed still counts.
+    await this.settlePendingSearch(user.id)
+    const daily = await readDailySearch(this.redis, user.id, isAdmin)
+    if (daily.searchesLeftToday === 0) {
+      throw new HttpException(
+        "You've already searched for leads today. Your leads are saved below; the next search is available tomorrow.",
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
+    }
     await this.limits.takeUserFetch(user.id)
 
     const { freshMinutes } = leadFinderConfig()
@@ -85,10 +98,19 @@ export class LeadFinderService {
       }
     }
 
+    const ready = platforms.every((p) => p.status === 'ready')
+    // Fresh cached results are a successful search too. A pending one counts
+    // when its job completes (getFetchStatus); a failed one never counts.
+    const searchedAt = ready ? await recordDailySearch(this.redis, user.id) : null
+    if (!ready) {
+      const jobIds = platforms.flatMap((p) => (p.status === 'pending' && p.jobId ? [p.jobId] : []))
+      await setPendingSearch(this.redis, user.id, jobIds)
+    }
     return {
       profileId: profile.id,
-      status: platforms.every((p) => p.status === 'ready') ? 'ready' : 'pending',
+      status: ready ? 'ready' : 'pending',
       platforms,
+      searchedAt,
     }
   }
 
@@ -113,6 +135,8 @@ export class LeadFinderService {
           result: job?.returnvalue ?? null,
           leadsAdded: added,
           lastFetchedAt: pool.fetchedAt.toISOString(),
+          // The search succeeded: today's search is now used.
+          searchedAt: await recordDailySearch(this.redis, user.id),
         }
       }
       if (state === 'missing') return { jobId, platform, state: 'failed' as const, error: 'Fetch not found' }
@@ -273,6 +297,38 @@ export class LeadFinderService {
       skipDuplicates: true,
     })
     return created.count
+  }
+
+  /**
+   * Counts a background search the user didn't wait for: if any of its jobs
+   * completed, today's search is used (dated when it finished). Failed or
+   * lost jobs don't count.
+   */
+  private async settlePendingSearch(userId: string) {
+    const pending = await takePendingSearch(this.redis, userId)
+    if (!pending) return
+    for (const jobId of pending.jobIds) {
+      const job = await this.queue.getJob(jobId)
+      const state = job ? await job.getState() : 'missing'
+      if (state === 'completed') {
+        await recordDailySearch(this.redis, userId, new Date(job?.finishedOn ?? Date.now()))
+        return
+      }
+      if (state === 'missing') {
+        // Completed jobs are removed after an hour: a pool written since the
+        // search started means it succeeded.
+        const pool = await prisma.leadPool.findUnique({ where: { queryKey: queryKeyFromJobId(jobId) } })
+        if (pool && pool.fetchedAt.getTime() >= new Date(pending.startedAt).getTime() - leadFinderConfig().freshMinutes * 60_000) {
+          await recordDailySearch(this.redis, userId, pool.fetchedAt)
+          return
+        }
+      }
+      if (state !== 'failed' && state !== 'missing') {
+        // Still running: keep waiting for it.
+        await setPendingSearch(this.redis, userId, pending.jobIds)
+        return
+      }
+    }
   }
 
   private async getOwnedProfile(userId: string, profileId: string) {

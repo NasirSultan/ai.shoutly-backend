@@ -9,6 +9,7 @@ import { MonitoringService } from '../monitoring/monitoring.service'
 import { readKeywords, toOrigin, USER_KEYWORD_MAX } from '../website-watcher/website-watcher.util'
 import { LeadFinderUser, assertLeadFinderAccess } from '../lead-finder/lead-finder-access'
 import { normalizeTerms } from '../lead-finder/query-key'
+import { DailySearchState, readDailySearch } from '../lead-finder/daily-search'
 import { CreateSearchProfileDto, UpdateSearchProfileDto } from './dto/search-profile.dto'
 
 const CHAT_MODEL = 'deepseek-chat'
@@ -48,6 +49,12 @@ export interface AutoProfileState {
   /** AI phrases a buyer would write, searched as well as the keywords */
   buyerPhrases: string[]
   profile: SearchProfile | null
+  /** Admins have no daily limit */
+  isAdmin: boolean
+  /** When the last successful "Get leads" finished */
+  lastSearchedAt: string | null
+  /** One successful search a day; null = no limit (admin) */
+  searchesLeftToday: number | null
 }
 
 const deepseek = new OpenAI({
@@ -136,14 +143,20 @@ export class SearchProfilesService {
    */
   async syncAutoProfile(user: LeadFinderUser): Promise<AutoProfileState> {
     await assertLeadFinderAccess(user)
-    const [analysis, industry] = await Promise.all([this.loadWebsiteAnalysis(user.id), this.loadIndustry(user.id)])
+    const isAdmin = user.role === 'SUPERADMIN'
+    const [analysis, industry, daily] = await Promise.all([
+      this.loadWebsiteAnalysis(user.id),
+      this.loadIndustry(user.id),
+      readDailySearch(this.redisService, user.id, isAdmin),
+    ])
+    const limits = { isAdmin, ...daily }
     const missing: AutoProfileState['missing'] = []
     if (!analysis) missing.push('keywords')
     if (!industry) missing.push('industry')
 
     const existing = await prisma.searchProfile.findFirst({ where: { userId: user.id, auto: true } })
     if (!analysis) {
-      return { ready: false, missing, industry, keywords: [], buyerPhrases: [], profile: null }
+      return { ready: false, missing, industry, keywords: [], buyerPhrases: [], profile: null, ...limits }
     }
 
     const topicKeywords = analysis.keywords
@@ -160,7 +173,7 @@ export class SearchProfilesService {
       existing.industry === industry &&
       existing.topicKeywords.join('|') === topicKeywords.join('|')
     // A failed AI call must not replace a good profile with a weaker one.
-    if (!ai && existing && sameTopic) return this.toAutoState(existing, missing)
+    if (!ai && existing && sameTopic) return this.toAutoState(existing, missing, limits)
 
     const buyerPhrases = (ai?.keywords ?? [])
       .filter((k) => !topicKeywords.includes(k))
@@ -181,24 +194,29 @@ export class SearchProfilesService {
         (k) => JSON.stringify(existing[k]) === JSON.stringify(data[k]),
       )
       const profile = unchanged ? existing : await prisma.searchProfile.update({ where: { id: existing.id }, data })
-      return this.toAutoState(profile, missing)
+      return this.toAutoState(profile, missing, limits)
     }
 
     try {
       const profile = await prisma.searchProfile.create({ data: { userId: user.id, auto: true, ...data } })
-      return this.toAutoState(profile, missing)
+      return this.toAutoState(profile, missing, limits)
     } catch (err) {
       // Two tabs opened at once: the unique index let only one create it.
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         const profile = await prisma.searchProfile.findFirst({ where: { userId: user.id, auto: true } })
-        if (profile) return this.toAutoState(profile, missing)
+        if (profile) return this.toAutoState(profile, missing, limits)
       }
       throw err
     }
   }
 
-  private toAutoState(profile: SearchProfile, missing: AutoProfileState['missing']): AutoProfileState {
+  private toAutoState(
+    profile: SearchProfile,
+    missing: AutoProfileState['missing'],
+    limits: DailySearchState & { isAdmin: boolean },
+  ): AutoProfileState {
     return {
+      ...limits,
       ready: true,
       missing,
       industry: profile.industry,
