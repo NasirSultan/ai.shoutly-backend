@@ -17,6 +17,13 @@ export class SearchProfilesController {
     return this.searchProfilesService.getSuggestions(req.user)
   }
 
+  // The user's automatic profile (built from their industry and Website
+  // Analysis keywords), created or updated on every call. Before ':id' too.
+  @Get('auto')
+  auto(@Req() req) {
+    return this.searchProfilesService.syncAutoProfile(req.user)
+  }
+
   @Post()
   create(@Req() req, @Body(new ValidationPipe({ whitelist: true })) dto: CreateSearchProfileDto) {
     return this.searchProfilesService.create(req.user, dto)

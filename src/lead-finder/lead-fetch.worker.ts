@@ -47,10 +47,11 @@ export class LeadFetchWorker implements OnModuleInit, OnModuleDestroy {
   }
 
   async process(job: Job<LeadFetchJobData, LeadFetchJobResult>): Promise<LeadFetchJobResult> {
-    const { queryKey, platform, keywords, subreddits, lockToken } = job.data
+    const { queryKey, platform, keywords, subreddits, topicKeywords, industry, lockToken } = job.data
     try {
       const fetched = dedupeById(await this.search(platform, keywords, subreddits))
-      return await this.store(queryKey, platform, keywords, fetched)
+      const topic = topicKeywords?.length ? topicKeywords : keywords
+      return await this.store(queryKey, platform, topic, industry ?? null, fetched)
     } finally {
       await this.limits.releaseFetchLock(queryKey, lockToken)
     }
@@ -73,7 +74,8 @@ export class LeadFetchWorker implements OnModuleInit, OnModuleDestroy {
   private async store(
     queryKey: string,
     platform: LeadFetchJobData['platform'],
-    keywords: string[],
+    topicKeywords: string[],
+    industry: string | null,
     fetched: FetchedPost[],
   ): Promise<LeadFetchJobResult> {
     const externalIds = fetched.map((p) => p.externalId)
@@ -90,7 +92,7 @@ export class LeadFetchWorker implements OnModuleInit, OnModuleDestroy {
     // Posts stored by another query keep their classification but still need a
     // relevance score for this query's topic.
     const toAnalyse = fetched.filter((p) => !linkedToQuery.has(p.externalId))
-    const analysed = toAnalyse.length ? await this.classifier.classify(toAnalyse, keywords) : new Map<string, PostAnalysis>()
+    const analysed = toAnalyse.length ? await this.classifier.classify(toAnalyse, topicKeywords, industry) : new Map<string, PostAnalysis>()
     const now = new Date()
 
     const rows: Prisma.SocialRawPostCreateManyInput[] = fresh

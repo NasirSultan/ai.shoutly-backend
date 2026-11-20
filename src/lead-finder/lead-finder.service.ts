@@ -67,6 +67,8 @@ export class LeadFinderService {
               platform,
               keywords: profile.keywords,
               subreddits: platform === 'REDDIT' ? profile.subreddits : [],
+              topicKeywords: profile.topicKeywords,
+              industry: profile.industry,
               lockToken: token,
             },
             jobId,
@@ -280,7 +282,10 @@ export class LeadFinderService {
   }
 
   private queryKeyFor(profile: SearchProfile, platform: LeadPlatform) {
-    return buildQueryKey(platform, profile.keywords, profile.subreddits)
+    return buildQueryKey(platform, profile.keywords, profile.subreddits, {
+      keywords: profile.topicKeywords,
+      industry: profile.industry,
+    })
   }
 }
 

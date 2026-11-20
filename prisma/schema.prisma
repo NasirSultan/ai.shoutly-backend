@@ -965,6 +965,14 @@ model SearchProfile {
   exclusions String[]
   platforms  LeadPlatform[]
   active     Boolean        @default(true)
+  /// Built by Lead Finder from the user's industry and Website Analysis
+  /// keywords (one per user), not filled in by hand. See syncAutoProfile.
+  auto          Boolean     @default(false)
+  /// The user's own Website Analysis keywords: what they sell. Posts are
+  /// scored against these; `keywords` (what is searched) adds buyer phrases.
+  topicKeywords String[]    @default([])
+  /// "Industry › Sub-industry" from the dashboard settings, for scoring context
+  industry      String?
   createdAt  DateTime       @default(now())
   updatedAt  DateTime       @updatedAt
 

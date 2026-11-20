@@ -79,9 +79,10 @@ export function buildPostsBlock(posts: FetchedPost[]): string {
 }
 
 /** The search topic comes from the query's own keywords, so the result is shared by everyone using that query. */
-export function buildUserMessage(posts: FetchedPost[], topicKeywords: string[]): string {
+export function buildUserMessage(posts: FetchedPost[], topicKeywords: string[], industry?: string | null): string {
   const topic = topicKeywords.map((k) => escapePostText(k)).join('; ')
-  return `SEARCH TOPIC (what the seller offers, as search phrases): ${topic}\n\nPosts:\n\n${buildPostsBlock(posts)}`
+  const industryLine = industry ? `SELLER'S INDUSTRY: ${escapePostText(industry)}\n` : ''
+  return `${industryLine}SEARCH TOPIC (what the seller offers, as search phrases): ${topic}\n\nPosts:\n\n${buildPostsBlock(posts)}`
 }
 
 /** Pulls the JSON object out of a reply that may be wrapped in ```json fences or prose. */
@@ -137,12 +138,12 @@ export class LeadClassifierService {
    * (those posts are not stored, so a later fetch tries them again).
    * Throws only when nothing at all could be classified.
    */
-  async classify(posts: FetchedPost[], topicKeywords: string[]): Promise<Map<string, PostAnalysis>> {
+  async classify(posts: FetchedPost[], topicKeywords: string[], industry?: string | null): Promise<Map<string, PostAnalysis>> {
     const out = new Map<string, PostAnalysis>()
     let failedBatches = 0
     for (let i = 0; i < posts.length; i += BATCH_SIZE) {
       const batch = posts.slice(i, i + BATCH_SIZE)
-      const byIndex = await this.classifyBatch(batch, topicKeywords)
+      const byIndex = await this.classifyBatch(batch, topicKeywords, industry)
       if (byIndex) byIndex.forEach((c, idx) => out.set(batch[idx].externalId, c))
       else {
         failedBatches++
@@ -155,14 +156,14 @@ export class LeadClassifierService {
     return out
   }
 
-  private async classifyBatch(batch: FetchedPost[], topicKeywords: string[]) {
+  private async classifyBatch(batch: FetchedPost[], topicKeywords: string[], industry?: string | null) {
     for (let attempt = 1; attempt <= ATTEMPTS_PER_BATCH; attempt++) {
       try {
         const completion = await deepseek.chat.completions.create({
           model: CHAT_MODEL,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: buildUserMessage(batch, topicKeywords) },
+            { role: 'user', content: buildUserMessage(batch, topicKeywords, industry) },
           ],
           response_format: { type: 'json_object' },
           temperature: 0,

@@ -15,6 +15,15 @@ describe('query keys', () => {
     expect(buildQueryKey('FACEBOOK', ['x'], [])).not.toBe(buildQueryKey('REDDIT', ['x'], []))
   })
 
+  it('keeps old keys when there is no topic, and splits keys by topic and industry', () => {
+    const plain = buildQueryKey('REDDIT', ['x'], [])
+    expect(buildQueryKey('REDDIT', ['x'], [], { keywords: [], industry: null })).toBe(plain)
+    const gym = buildQueryKey('REDDIT', ['x'], [], { keywords: ['personal training'], industry: 'Fitness' })
+    expect(gym).not.toBe(plain)
+    expect(buildQueryKey('REDDIT', ['x'], [], { keywords: ['Personal  Training'], industry: 'fitness' })).toBe(gym)
+    expect(buildQueryKey('REDDIT', ['x'], [], { keywords: ['personal training'], industry: 'Education' })).not.toBe(gym)
+  })
+
   it('round-trips the query key through the job id', () => {
     const key = buildQueryKey('REDDIT', ['x'], [])
     const jobId = buildFetchJobId(key, 30, 1_700_000_000_000)

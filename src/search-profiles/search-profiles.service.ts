@@ -1,4 +1,5 @@
 import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common'
+import { Prisma, SearchProfile } from '@prisma/client'
 import { createHash } from 'crypto'
 import OpenAI from 'openai'
 import { prisma } from '../lib/prisma'
@@ -18,6 +19,36 @@ const SUBREDDIT_NAME = /^[A-Za-z0-9_]{2,21}$/
 // Words that also show up in real buyers' posts ("a free app", "need help"),
 // so they are never suggested as exclusions even if the AI proposes them.
 const TOO_BROAD_EXCLUSIONS = new Set(['free', 'cheap', 'help', 'need', 'hire', 'hiring', 'looking', 'app', 'website', 'job'])
+// The automatic profile searches for a few AI buyer phrases plus the user's
+// own keywords. Facebook only searches the first few, so buyer phrases go first.
+const AUTO_BUYER_PHRASES = 4
+const AUTO_SEARCH_KEYWORDS = 12
+// Used when the AI can't suggest exclusions: people selling, not buying.
+const DEFAULT_EXCLUSIONS = ['[for hire]', 'looking for work', 'open to work']
+
+/** What the AI suggests from the Website Analysis (cached per input). */
+interface SearchSuggestions {
+  suggestedName: string
+  /** Phrases a buyer would write */
+  keywords: string[]
+  subreddits: string[]
+  exclusions: string[]
+}
+
+/** GET /search-profiles/auto: the user's automatic profile, or what is missing to build it. */
+export interface AutoProfileState {
+  /** true = there is a profile and "Get leads" can run */
+  ready: boolean
+  /** What the user still needs to set up. Keywords are required, industry only helps. */
+  missing: ('keywords' | 'industry')[]
+  /** "Industry › Sub-industry" from the dashboard settings */
+  industry: string | null
+  /** The user's own Website Analysis keywords (what they sell) */
+  keywords: string[]
+  /** AI phrases a buyer would write, searched as well as the keywords */
+  buyerPhrases: string[]
+  profile: SearchProfile | null
+}
 
 const deepseek = new OpenAI({
   apiKey: process.env.DEEPSEEK_API_KEY,
@@ -72,7 +103,7 @@ export class SearchProfilesService {
    */
   async getSuggestions(user: LeadFinderUser): Promise<ProfileSuggestions> {
     await assertLeadFinderAccess(user)
-    const analysis = await this.loadWebsiteAnalysis(user.id)
+    const [analysis, industry] = await Promise.all([this.loadWebsiteAnalysis(user.id), this.loadIndustry(user.id)])
     if (!analysis) {
       return {
         analysed: false,
@@ -86,22 +117,121 @@ export class SearchProfilesService {
       }
     }
 
-    const cacheKey = `lead-finder:suggestions:${user.id}:${createHash('sha1')
-      .update(JSON.stringify([analysis.summary, analysis.keywords]))
-      .digest('hex')}`
-    const cached = await this.readCache(cacheKey)
-    if (cached) return cached
-
-    const ai = await this.suggestSearch(analysis.summary, analysis.keywords)
-    const result: ProfileSuggestions = {
+    const ai = await this.cachedSuggestions(user.id, analysis.summary, analysis.keywords, industry)
+    return {
       analysed: true,
       source: analysis.source,
       summary: analysis.summary,
       serviceKeywords: analysis.keywords,
       ...ai,
     }
-    await this.writeCache(cacheKey, result)
-    return result
+  }
+
+  /**
+   * The user's one automatic profile, built from data they already have:
+   * their Website Analysis keywords (what they sell, used for scoring) and
+   * their dashboard industry. What is searched is those keywords plus a few
+   * AI buyer phrases. Called each time Lead Finder opens, so a change to the
+   * keywords or industry is picked up without the user doing anything.
+   */
+  async syncAutoProfile(user: LeadFinderUser): Promise<AutoProfileState> {
+    await assertLeadFinderAccess(user)
+    const [analysis, industry] = await Promise.all([this.loadWebsiteAnalysis(user.id), this.loadIndustry(user.id)])
+    const missing: AutoProfileState['missing'] = []
+    if (!analysis) missing.push('keywords')
+    if (!industry) missing.push('industry')
+
+    const existing = await prisma.searchProfile.findFirst({ where: { userId: user.id, auto: true } })
+    if (!analysis) {
+      return { ready: false, missing, industry, keywords: [], buyerPhrases: [], profile: null }
+    }
+
+    const topicKeywords = analysis.keywords
+    // AI phrases are a bonus: if the AI is down, search the user's own keywords.
+    let ai: SearchSuggestions | null = null
+    try {
+      ai = await this.cachedSuggestions(user.id, analysis.summary, topicKeywords, industry)
+    } catch {
+      ai = null
+    }
+
+    const sameTopic =
+      !!existing &&
+      existing.industry === industry &&
+      existing.topicKeywords.join('|') === topicKeywords.join('|')
+    // A failed AI call must not replace a good profile with a weaker one.
+    if (!ai && existing && sameTopic) return this.toAutoState(existing, missing)
+
+    const buyerPhrases = (ai?.keywords ?? [])
+      .filter((k) => !topicKeywords.includes(k))
+      .slice(0, AUTO_BUYER_PHRASES)
+    const data = {
+      name: (industry ? `${industry} leads` : 'My leads').slice(0, 80),
+      summary: analysis.summary?.slice(0, 500) ?? null,
+      keywords: cleanList([...buyerPhrases, ...topicKeywords], AUTO_SEARCH_KEYWORDS),
+      subreddits: ai?.subreddits ?? [],
+      exclusions: ai?.exclusions.length ? ai.exclusions : DEFAULT_EXCLUSIONS,
+      platforms: ['REDDIT', 'FACEBOOK'] as SearchProfile['platforms'],
+      topicKeywords,
+      industry,
+    }
+
+    if (existing) {
+      const unchanged = (['name', 'summary', 'keywords', 'subreddits', 'exclusions', 'platforms', 'topicKeywords', 'industry'] as const).every(
+        (k) => JSON.stringify(existing[k]) === JSON.stringify(data[k]),
+      )
+      const profile = unchanged ? existing : await prisma.searchProfile.update({ where: { id: existing.id }, data })
+      return this.toAutoState(profile, missing)
+    }
+
+    try {
+      const profile = await prisma.searchProfile.create({ data: { userId: user.id, auto: true, ...data } })
+      return this.toAutoState(profile, missing)
+    } catch (err) {
+      // Two tabs opened at once: the unique index let only one create it.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const profile = await prisma.searchProfile.findFirst({ where: { userId: user.id, auto: true } })
+        if (profile) return this.toAutoState(profile, missing)
+      }
+      throw err
+    }
+  }
+
+  private toAutoState(profile: SearchProfile, missing: AutoProfileState['missing']): AutoProfileState {
+    return {
+      ready: true,
+      missing,
+      industry: profile.industry,
+      keywords: profile.topicKeywords,
+      buyerPhrases: profile.keywords.filter((k) => !profile.topicKeywords.includes(k)),
+      profile,
+    }
+  }
+
+  /** AI buyer phrases, subreddits and exclusions, cached until the inputs change. */
+  private async cachedSuggestions(userId: string, summary: string | null, keywords: string[], industry: string | null) {
+    const cacheKey = `lead-finder:suggestions:${userId}:${createHash('sha1')
+      .update(JSON.stringify([summary, keywords, industry]))
+      .digest('hex')}`
+    const cached = await this.readCache(cacheKey)
+    if (cached) return cached
+    const ai = await this.suggestSearch(summary, keywords, industry)
+    await this.writeCache(cacheKey, ai)
+    return ai
+  }
+
+  /** "Industry › Sub-industry" from the dashboard settings, or null when not chosen. */
+  private async loadIndustry(userId: string): Promise<string | null> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        industry: { select: { name: true } },
+        subIndustry: { select: { name: true, industry: { select: { name: true } } } },
+      },
+    })
+    const industryName = user?.industry?.name ?? user?.subIndustry?.industry?.name
+    const parts = [industryName, user?.subIndustry?.name].map((p) => p?.trim()).filter(Boolean)
+    return parts.length ? [...new Set(parts)].join(' › ') : null
   }
 
   list(user: LeadFinderUser) {
@@ -187,9 +317,14 @@ export class SearchProfilesService {
     }
   }
 
-  private async suggestSearch(summary: string | null, serviceKeywords: string[]) {
+  private async suggestSearch(
+    summary: string | null,
+    serviceKeywords: string[],
+    industry: string | null,
+  ): Promise<SearchSuggestions> {
     const prompt = `You help a business find people on Reddit and Facebook who want to hire or buy what it offers.
 
+Industry: ${industry ?? '(not set)'}
 Business summary: ${summary ?? '(none)'}
 What it offers (service keywords): ${serviceKeywords.join('; ')}
 
@@ -248,16 +383,16 @@ Rules: phrases in plain lowercase English, each under 6 words. Never include the
     }
   }
 
-  private async readCache(key: string): Promise<ProfileSuggestions | null> {
+  private async readCache(key: string): Promise<SearchSuggestions | null> {
     try {
       const value = await this.redisService.getClient().get(key)
-      return value ? (JSON.parse(String(value)) as ProfileSuggestions) : null
+      return value ? (JSON.parse(String(value)) as SearchSuggestions) : null
     } catch {
       return null
     }
   }
 
-  private async writeCache(key: string, value: ProfileSuggestions) {
+  private async writeCache(key: string, value: SearchSuggestions) {
     try {
       await this.redisService.getClient().set(key, JSON.stringify(value), { EX: SUGGESTION_CACHE_SECONDS })
     } catch (err) {
