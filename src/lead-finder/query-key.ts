@@ -14,11 +14,22 @@ export function normalizeTerms(terms: string[] | undefined | null): string[] {
  * with the same keywords (and, on Reddit, the same subreddits) share one fetch.
  * No ':' in the key, because it also goes into BullMQ job ids.
  */
-export function buildQueryKey(platform: LeadPlatform, keywords: string[], subreddits: string[]): string {
-  const scope = {
+export function buildQueryKey(
+  platform: LeadPlatform,
+  keywords: string[],
+  subreddits: string[],
+  topic?: { keywords: string[]; industry: string | null },
+): string {
+  const scope: Record<string, unknown> = {
     platform,
     keywords: normalizeTerms(keywords),
     subreddits: platform === 'REDDIT' ? normalizeTerms(subreddits) : [],
+  }
+  // Relevance is scored against the topic, so a different topic is a different
+  // cache entry. Left out when there is none, so older keys stay the same.
+  if (topic?.keywords.length) {
+    scope.topic = normalizeTerms(topic.keywords)
+    scope.industry = topic.industry?.trim().toLowerCase() || null
   }
   const hash = createHash('sha256').update(JSON.stringify(scope)).digest('hex').slice(0, 32)
   return `${platform.toLowerCase()}_${hash}`

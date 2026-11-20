@@ -34,6 +34,10 @@ export interface LeadFetchJobData {
   platform: LeadPlatform
   keywords: string[]
   subreddits: string[]
+  /** What the seller offers, to score relevance against. Defaults to `keywords`. */
+  topicKeywords?: string[]
+  /** The seller's industry, as context for scoring */
+  industry?: string | null
   lockToken: string
 }
 
